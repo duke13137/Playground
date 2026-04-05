@@ -103,6 +103,7 @@ getTodosSession = do
 getTodosPage :: Pool -> ResponderM a
 getTodosPage pool = do
   items <- runDbOr500 pool getTodosSession
+  -- breakpointM
   render $ todoPage items "all"
 
 getTodoListPartial :: Pool -> ResponderM a
@@ -110,6 +111,7 @@ getTodoListPartial pool = do
   items   <- runDbOr500 pool getTodosSession
   filter_ <- Twain.paramMaybe @Text "filter"
   search_ <- Twain.paramMaybe @Text "search"
+  -- breakpointM
   render $ todoListSection items (fromMaybe "" search_) (fromMaybe "all" filter_)
 
 addTodo :: Pool -> ResponderM a
@@ -121,6 +123,7 @@ addTodo pool = do
   items <- runDbOr500 pool getTodosSession
   let f = fromMaybe "all" filter_
   let s = fromMaybe "" search_
+  -- breakpointM
   render do
     todoListSection items s f
     [hsx|<input id="todo-input" name="title" placeholder="What needs to be done?" required autofocus hx-swap-oob="true">|]
@@ -132,6 +135,7 @@ toggleTodo pool = do
   search_ <- Twain.paramMaybe @Text "search"
   runDbOr500 pool (toggleTodoSession i)
   items <- runDbOr500 pool getTodosSession
+  -- breakpointM
   render $ todoListSection items (fromMaybe "" search_) (fromMaybe "all" filter_)
 
 deleteTodo :: Pool -> ResponderM a
@@ -141,6 +145,7 @@ deleteTodo pool = do
   search_ <- Twain.paramMaybe @Text "search"
   runDbOr500 pool (deleteTodoSession i)
   items <- runDbOr500 pool getTodosSession
+  -- breakpointM
   render $ todoListSection items (fromMaybe "" search_) (fromMaybe "all" filter_)
 
 clearCompleted :: Pool -> ResponderM a
@@ -149,12 +154,14 @@ clearCompleted pool = do
   search_ <- Twain.paramMaybe @Text "search"
   runDbOr500 pool clearCompletedSession
   items <- runDbOr500 pool getTodosSession
+  -- breakpointM
   render $ todoListSection items (fromMaybe "" search_) (fromMaybe "all" filter_)
 
 editTodoForm :: Pool -> ResponderM a
 editTodoForm pool = do
   i <- Twain.param @Int64 "id"
   mTodo <- runDbOr500 pool (getTodoSession i)
+  -- breakpointM
   case mTodo of
     Just todo -> render [hsx|
       <li style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0; border-bottom: 1px solid var(--pico-muted-border-color);"
@@ -173,6 +180,7 @@ updateTodo pool = do
   title' <- Twain.param @Text "title"
   runDbOr500 pool (updateTodoTitleSession i title')
   mTodo <- runDbOr500 pool (getTodoSession i)
+  -- breakpointM
   case mTodo of
     Just todo -> render $ todoItem todo
     Nothing   -> send $ Twain.status (toEnum 404) $ Twain.html "Todo not found"
