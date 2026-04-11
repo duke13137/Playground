@@ -1,6 +1,36 @@
+# Projects namespace.
+# In case of personal projects it's your username,
+# in case of organization projects it's the organization name.
+# Affects the namespacing in the generated artifacts.
 space: my_space
-name: todos
-version: 1.0.0
 
+# Name of the project.
+# Affects the namespacing in the generated artifacts.
+name: music_catalogue
+
+# Version to be used in the generated artifacts.
+# The convention is [SemVer](https://semver.org/).
+#
+# In case of Haskell the version will be prepended with "0."
+# to comply to the PVP convention.
+version: 1.0.1
+
+# PostgreSQL version to be used for validating the schema and queries.
+postgres: 18
+
+# Artifacts that we want Pgenie to produce.
+# I.e., libraries for various platforms.
+# If you don't specify any artifacts Pgenie simply validates your schema
+# and queries.
 artifacts:
   haskell: https://raw.githubusercontent.com/pgenie-io/haskell.gen/v0.2.1/gen/Gen.dhall
+  
+  java-optional:
+    gen: https://raw.githubusercontent.com/pgenie-io/java.gen/v0.3.3/gen/Gen.dhall
+    config:
+      useOptional: true # Use Optional for nullable fields for clarity.
+
+  java-null:
+    gen: https://raw.githubusercontent.com/pgenie-io/java.gen/v0.3.3/gen/Gen.dhall
+
+  rust: https://raw.githubusercontent.com/pgenie-io/rust.gen/v0.1.0/gen/Gen.dhall

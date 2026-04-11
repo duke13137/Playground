@@ -22,12 +22,12 @@ env:
 	rm .ghc.environment.*$(GHC)* || true
 	cabal install -w ghc-$(GHC) --allow-newer --enable-documentation \
 		--package-env . --lib \
-		base template-haskell containers optics relude text vector \
+		base containers optics relude template-haskell text vector \
 		aeson aeson-optics generic-data safe-wild-cards strict-wrapper \
-		breakpoint co-log ki io-classes io-sim stm stm-containers \
-		hasql hasql-th hasql-pool hasql-transaction \
-		ihp-hsx lucid2 http-media http-types servant servant-client servant-server \
-		pretty-show show rapid twain wai wai-extra warp tasty tasty-hunit tasty-wai
+		hasql hasql-th hasql-pool hasql-transaction stm-containers \
+		ihp-hsx lucid2 http-media http-types servant servant-server \
+		twain wai wai-extra warp tasty tasty-hunit tasty-wai \
+ 		breakpoint co-log io-classes io-sim ki nothunks rapid
 
 hie:
 	hiedb-$(GHC) -D .hiedb index .build
