@@ -27,7 +27,7 @@ env:
 		hasql hasql-th hasql-pool hasql-transaction stm-containers \
 		ihp-hsx lucid2 http-media http-types servant servant-server \
 		twain wai wai-extra warp tasty tasty-hunit tasty-wai \
- 		breakpoint co-log io-classes io-sim ki nothunks rapid
+		breakpoint co-log io-classes io-sim ki nothunks rapid
 
 hie:
 	hiedb-$(GHC) -D .hiedb index .build
