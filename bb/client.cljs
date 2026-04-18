@@ -92,4 +92,4 @@
     (when (seq errors) (js/console.error "Failed:" (clj->js errors)))
     @test-results))
 
-(run-tests)
+(js/console.log "hello from nvim")

@@ -1,12 +1,23 @@
 (ns todoapp-test
-  (:require [clojure.test :refer [deftest is testing]]
-            [todoapp :as sut]))
+  (:require [clojure.string :as str]
+             [clojure.test :refer [deftest is testing]]
+             [todoapp :as sut]))
+
+(defn cleanup-test-todos! [prefix]
+  (doseq [{:keys [id name]} (sut/get-all-todos)
+          :when (str/starts-with? name prefix)]
+    (sut/remove-todo! id)))
 
 (deftest test-broadcast-single-client
   (testing "Single client receives patch after mutation"
-    (let [initial-count (count (sut/get-all-todos))]
-      (sut/add-todo! "test broadcast")
-      (is (= (inc initial-count) (count (sut/get-all-todos)))))))
+    (let [prefix (str "test-broadcast-" (random-uuid))
+          name (str prefix "-todo")
+          initial-count (count (sut/get-all-todos))]
+      (try
+        (sut/add-todo! name)
+        (is (= (inc initial-count) (count (sut/get-all-todos))))
+        (finally
+          (cleanup-test-todos! prefix))))))
 
 (deftest test-broadcast-multi-client
   (testing "All connected clients receive same broadcast"
@@ -59,3 +70,53 @@
       (sut/start-editing! todo-id "user-a")
       (sut/start-editing! todo-id "user-b")
       (is (= "user-b" (get @sut/editing-users todo-id))))))
+
+(deftest test-edit-form-focuses-on-load
+  (testing "Todo label schedules edit input focus after edit patch"
+    (let [markup (sut/html (sut/todo-item {:id 1 :name "sleep" :done false}))]
+      (is (str/includes? markup "#todo-1 .edit"))
+      (is (str/includes? markup "requestAnimationFrame(focusEdit)")))))
+
+(deftest test-add-todo-rejects-duplicate-name
+  (testing "Add rejects duplicate names after normalization"
+    (let [prefix (str "test-dup-add-" (random-uuid))
+          name (str prefix "-sleep")]
+      (try
+        (is (true? (sut/add-todo! name)))
+        (is (false? (sut/add-todo! (str "  " (str/upper-case name) "  "))))
+        (is (= [name]
+               (->> (sut/get-all-todos)
+                    (map :name)
+                    (filter #(str/starts-with? % prefix)))))
+        (finally
+          (cleanup-test-todos! prefix))))))
+
+(deftest test-update-todo-name-rejects-duplicate-name
+  (testing "Edit rejects renaming a todo to another todo's name"
+    (let [prefix (str "test-dup-edit-" (random-uuid))
+          sleep-name (str prefix "-sleep")
+          walk-name (str prefix "-walk")]
+      (try
+        (sut/add-todo! sleep-name)
+        (sut/add-todo! walk-name)
+        (let [todos (filter #(str/starts-with? (:name %) prefix) (sut/get-all-todos))
+              sleep-id (:id (first (filter #(= sleep-name (:name %)) todos)))
+              walk-id (:id (first (filter #(= walk-name (:name %)) todos)))]
+          (is (true? (sut/update-todo-name! sleep-id sleep-name)))
+          (is (false? (sut/update-todo-name! walk-id (str " " (str/upper-case sleep-name) " "))))
+          (is (= [sleep-name walk-name]
+                 (sort (map :name (filter #(str/starts-with? (:name %) prefix)
+                                          (sut/get-all-todos)))))))
+        (finally
+          (cleanup-test-todos! prefix))))))
+
+(deftest test-find-duplicate-todo-matches-normalized-name
+  (testing "Duplicate lookup finds the existing todo to flash"
+    (let [prefix (str "test-dup-find-" (random-uuid))
+          name (str prefix "-sleep")]
+      (try
+        (sut/add-todo! name)
+        (is (= name
+               (:name (sut/find-duplicate-todo (str "  " (str/upper-case name) "  ")))))
+        (finally
+          (cleanup-test-todos! prefix))))))

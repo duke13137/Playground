@@ -19,17 +19,28 @@
       src="https://cdn.jsdelivr.net/npm/scittle@0.8.31/dist/scittle.js-interop.js"
       type="application/javascript"
     ></script>
-    <script
-      src="https://cdn.jsdelivr.net/npm/scittle@0.8.31/dist/scittle.replicant.js"
-      type="application/javascript"
-    ></script>
+    <script>
+      var SCITTLE_NREPL_WEBSOCKET_PORT = 3340;
+    </script>
     <script
       src="https://cdn.jsdelivr.net/npm/scittle@0.8.31/dist/scittle.nrepl.js"
       type="application/javascript"
-    >
-      var SCITTLE_NREPL_WEBSOCKET_PORT = 3340;
-    </script>
-    <script src="client.cljs" type="application/x-scittle"></script>
+    ></script>
+    <style>
+      @keyframes duplicate-flash {
+        0% {
+          background: rgba(255, 208, 0, 0.45);
+        }
+
+        100% {
+          background: transparent;
+        }
+      }
+
+      .todo-list li.duplicate-flash {
+        animation: duplicate-flash 0.9s ease;
+      }
+    </style>
   </head>
   <body>
     <section
@@ -39,7 +50,7 @@
       data-signals:edittext="''"
       data-signals:cid="'{{client-id}}'"
       data-on-load="@get('/todos/sse')"
-      data-on-interval__duration.1s="@get('/todos/sse')"
+      data-on-interval__duration.1s="$edittext === '' && @get('/todos/sse')"
     >
       <header class="header">
         <h1>todos</h1>

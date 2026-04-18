@@ -14,8 +14,6 @@
     [starfederation.datastar.clojure.adapter.http-kit2 :as hk]
     [todoapp]))
 
-(require '[sci.nrepl.browser-server :as browser])
-(require '[babashka.nrepl.server :as nrepl])
 
 (comment
 
@@ -117,9 +115,11 @@
               {:port port}))
     (println "serving" url)))
 
+(require '[sci.nrepl.browser-server :as browser])
+(require '[babashka.nrepl.server :as nrepl])
 (when (= *file* (System/getProperty "babashka.file"))
   (browser/start! {:nrepl-port 3339 :websocket-port 3340})
-  (nrepl/start-server! {:host "127.0.0.1" :port 3341})
+  (nrepl/start-server! {:host "127.0.0.1" :port 3333})
+  ;; (srv)
   (-main)
-  #_(srv)
   @(promise))

@@ -7,10 +7,10 @@
    [starfederation.datastar.clojure.api :as d*]
    [starfederation.datastar.clojure.adapter.http-kit2 :as hk]))
 
-(require '[datalevin.core :as d])
-;; (require '[babashka.pods :as pods])
-;; (pods/load-pod 'huahaiy/datalevin "0.10.7")
-;; (require '[pod.huahaiy.datalevin :as d])
+#?(:bb  (do (require '[babashka.pods :as pods])
+            (pods/load-pod 'huahaiy/datalevin "0.10.7")
+            (require '[pod.huahaiy.datalevin :as d]))
+   :clj (require '[datalevin.core :as d]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Datalevin
@@ -18,12 +18,18 @@
 
 (def schema
   {:todo/name {:db/valueType :db.type/string}
+   :todo/name-key {:db/valueType :db.type/string
+                   :db/unique :db.unique/value}
    :todo/done {:db/valueType :db.type/boolean}})
 
-(def conn (d/get-conn "/tmp/bb-todos" schema))
+(def db-path (or (System/getenv "BB_TODOS_DB_PATH") "/tmp/bb-todos"))
+
+(def conn (d/get-conn db-path schema))
 
 (defn db []
   (d/db conn))
+
+(declare get-all-todos)
 
 (defn todo-ids []
   (d/q '[:find [?e ...] :where [?e :todo/name _]] (db)))
@@ -36,19 +42,65 @@
   [m]
   {:id (:db/id m) :name (:todo/name m) :done (boolean (:todo/done m))})
 
+(defn normalize-todo-name [name]
+  (some-> name str/trim not-empty))
+
+(defn todo-name-key [name]
+  (some-> name normalize-todo-name str/lower-case))
+
+(defn find-duplicate-todo [name & {:keys [exclude-id]}]
+  (when-let [candidate (todo-name-key name)]
+    (some (fn [{:keys [id name] :as todo}]
+            (when (and (not= id exclude-id)
+                       (= candidate (todo-name-key name)))
+              todo))
+          (get-all-todos))))
+
+(defn duplicate-name-error? [e]
+  (= :transact/unique (:error (ex-data e))))
+
+(defn transact-todo! [tx-data]
+  (try
+    (d/transact! conn tx-data)
+    true
+    (catch Exception e
+      (if (duplicate-name-error? e)
+        false
+        (throw e)))))
+
+(defn ensure-todo-name-keys! []
+  (doseq [id (todo-ids)
+          :let [todo (d/pull (db) [:db/id :todo/name :todo/name-key] id)
+                name-key (todo-name-key (:todo/name todo))]
+          :when (and name-key (not= name-key (:todo/name-key todo)))]
+    (try
+      (d/transact! conn [[:db/add id :todo/name-key name-key]])
+      (catch Exception e
+        (when-not (duplicate-name-error? e)
+          (throw e))))))
+
+(ensure-todo-name-keys!)
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; CRUD
 ;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn add-todo! [name]
-  (d/transact! conn [{:todo/name name :todo/done false}]))
+  (if-let [name (normalize-todo-name name)]
+    (transact-todo! [{:todo/name name
+                      :todo/name-key (todo-name-key name)
+                      :todo/done false}])
+    false))
 
 (defn toggle-todo! [id]
   (let [done (:todo/done (d/pull (db) [:todo/done] id))]
     (d/transact! conn [[:db/add id :todo/done (not done)]])))
 
 (defn update-todo-name! [id name]
-  (d/transact! conn [[:db/add id :todo/name name]]))
+  (if-let [name (normalize-todo-name name)]
+    (transact-todo! [[:db/add id :todo/name name]
+                     [:db/add id :todo/name-key (todo-name-key name)]])
+    false))
 
 (defn remove-todo! [id]
   (d/transact! conn [[:db/retractEntity id]]))
@@ -97,6 +149,17 @@
 
 (defn patch-signals! [sse m]
   (d*/patch-signals! sse (json/generate-string m)))
+
+(defn flash-todo-script [id]
+  (str "(() => { "
+       "const el = document.getElementById('todo-" id "'); "
+       "if (!el) return; "
+       "el.classList.remove('duplicate-flash'); "
+       "void el.offsetWidth; "
+       "el.classList.add('duplicate-flash'); "
+       "el.scrollIntoView({block: 'nearest', behavior: 'smooth'}); "
+       "setTimeout(() => el.classList.remove('duplicate-flash'), 900); "
+       "})()"))
 
 (defn get-signals [req]
   (let [raw (d*/get-signals req)]
@@ -159,15 +222,21 @@
     [:input.toggle {:type "checkbox"
                     :checked done
                     :data-on:click (str "@patch('/todos/sse/done/" id "')")}]
-    [:label {:data-on:dblclick (str "@get('/todos/sse/edit/" id "')")}
+    [:label {:data-on:dblclick
+             (str "@get('/todos/sse/edit/" id "'); "
+                  "(() => { let tries = 0; const focusEdit = () => { "
+                  "const input = document.querySelector('#todo-" id " .edit'); "
+                  "if (input) { input.focus(); input.select(); } "
+                  "else if (tries < 10) { tries += 1; requestAnimationFrame(focusEdit); } "
+                  "}; requestAnimationFrame(focusEdit); })()")}
      name]
     [:button.destroy
-     {:data-on:click (str "@delete('/todos/sse/" id "')")}]]])
+      {:data-on:click (str "@delete('/todos/sse/" id "')")}]]])
 
 (defn todo-edit-form [id name]
   [:li {:id (str "todo-" id) :class "editing"}
    [:input.edit {:data-bind:edittext ""
-                 :data-on:keydown (str "evt.key === 'Enter' && @patch('/todos/sse/name/" id "')")
+                 :data-on:keydown "evt.key === 'Enter' && (evt.preventDefault(), evt.target.blur())"
                  :data-on:blur (str "@patch('/todos/sse/name/" id "')")
                  :autofocus true}]])
 
@@ -202,10 +271,11 @@
       (catch Exception _
         (swap! streams dissoc cid)))))
 
-(defn respond! [sse filter & {:keys [broadcast? signals]}]
+(defn respond! [sse filter & {:keys [broadcast? signals script]}]
   (patch-all! sse filter)
   (when broadcast? (broadcast!))
   (when signals (patch-signals! sse signals))
+  (when script (d*/execute-script! sse script))
   (d*/close-sse! sse))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -221,11 +291,15 @@
 
 (defn add-todo [req sse]
   (let [signals (or (get-signals req) {})
-        {:keys [todo filter]} signals
-        filter (or filter "all")]
-    (when-not (str/blank? todo)
-      (add-todo! todo))
-    (respond! sse filter :broadcast? true :signals {:todo ""})))
+         {:keys [todo filter]} signals
+          filter (or filter "all")]
+    (let [created? (add-todo! todo)
+          duplicate-id (:id (when-not created?
+                              (find-duplicate-todo todo)))]
+      (respond! sse filter
+                :broadcast? created?
+                :signals (when created? {:todo ""})
+                :script (when duplicate-id (flash-todo-script duplicate-id))))))
 
 (defn edit-todo [req sse]
   (let [signals (or (get-signals req) {})
@@ -237,12 +311,16 @@
 
 (defn save-todo [req sse]
   (let [signals (or (get-signals req) {})
-        {:keys [edittext filter]} signals
-        filter (or filter "all")
-        id (path-id req)]
-    (when-not (str/blank? edittext)
-      (update-todo-name! id edittext))
-    (respond! sse filter :broadcast? true)))
+         {:keys [edittext filter]} signals
+          filter (or filter "all")
+          id (path-id req)]
+    (let [saved? (update-todo-name! id edittext)
+          duplicate-id (:id (when-not saved?
+                              (find-duplicate-todo edittext :exclude-id id)))]
+      (respond! sse filter
+                :broadcast? saved?
+                :signals (when saved? {:edittext ""})
+                :script (when duplicate-id (flash-todo-script duplicate-id))))))
 
 (defn toggle-todo [req sse]
   (let [signals (or (get-signals req) {})

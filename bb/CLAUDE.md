@@ -47,11 +47,11 @@ curl 127.0.0.1:3000/
 `brepl` tries ports in order: `.nrepl-port` file, then 9999 (clojure default), then 1666 (bb server). Always prefer `brepl` without `-p` unless targeting a specific REPL.
 
 ```bash
-# auto-detect port (tries .nrepl-port → 9999 → 1666)
+# auto-detect port (tries .nrepl-port → 9999 → 3333)
 brepl '(println "hello")'
 
 # send to browser nrepl (always explicit)
-brepl -p 1333 '(println "browser")'
+brepl -p 3339 '(println "browser")'
 ```
 
 ## Testing
