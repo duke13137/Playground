@@ -7,9 +7,10 @@
    [starfederation.datastar.clojure.api :as d*]
    [starfederation.datastar.clojure.adapter.http-kit2 :as hk]))
 
-(require '[babashka.pods :as pods])
-(pods/load-pod 'huahaiy/datalevin "0.10.7")
-(require '[pod.huahaiy.datalevin :as d])
+(require '[datalevin.core :as d])
+;; (require '[babashka.pods :as pods])
+;; (pods/load-pod 'huahaiy/datalevin "0.10.7")
+;; (require '[pod.huahaiy.datalevin :as d])
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Datalevin
