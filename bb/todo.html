@@ -2,15 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Datastar Todos - Babashka</title>
+    <title>htmx Todos - Babashka</title>
     <link
       href="https://unpkg.com/todomvc-app-css@2.4.1/index.css"
       rel="stylesheet"
     />
-    <script
-      type="module"
-      src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0/bundles/datastar.js"
-    ></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/htmx.org@next"></script>
     <script
       src="https://cdn.jsdelivr.net/npm/scittle@0.8.31/dist/scittle.js"
       type="application/javascript"
@@ -43,65 +40,40 @@
     </style>
   </head>
   <body>
-    <section
-      class="todoapp"
-      data-signals:todo="''"
-      data-signals:filter="'all'"
-      data-signals:edittext="''"
-      data-signals:cid="'{{client-id}}'"
-      data-on-load="@get('/todos/sse')"
-      data-on-interval__duration.1s="$edittext === '' && @get('/todos/sse')"
-    >
+    <section class="todoapp">
       <header class="header">
         <h1>todos</h1>
-        <input
-          class="new-todo"
-          data-bind:todo
-          data-on:keydown="evt.key === 'Enter' && @post('/todos/sse')"
-          placeholder="What needs to be done?"
-          autofocus
-        />
+        <form
+          id="add-form"
+          hx-post="/todos"
+          hx-target="#add-form"
+          hx-swap="outerHTML"
+          hx-include="#todo-list-form input[name='filter']"
+        >
+          <input
+            id="todo-input"
+            class="new-todo"
+            type="text"
+            aria-label="New todo"
+            name="title"
+            placeholder="What needs to be done?"
+            autocomplete="off"
+            required
+            autofocus
+            hx-get="/todos/list"
+            hx-trigger="input changed delay:500ms"
+            hx-include="#todo-list-form input[name='filter']"
+            hx-target="#todo-list"
+            hx-swap="outerHTML"
+            hx-sync="closest form:abort"
+          />
+        </form>
       </header>
-      <section class="main">
-        <input id="toggle-all" class="toggle-all" type="checkbox" />
-        <label for="toggle-all">Mark all as complete</label>
-      </section>
-      <ul id="todo-list" class="todo-list">
-        {{initial-todos|safe}}
-      </ul>
-      <footer class="footer">
-        {{item-count|safe}}
-        <ul id="filters" class="filters">
-          <li>
-            <a
-              data-on:click="$filter='all'; @get('/todos/sse')"
-              data-class:selected="$filter === 'all'"
-              href="javascript:void(0)"
-              >All</a
-            >
-          </li>
-          <li>
-            <a
-              data-on:click="$filter='active'; @get('/todos/sse')"
-              data-class:selected="$filter === 'active'"
-              href="javascript:void(0)"
-              >Active</a
-            >
-          </li>
-          <li>
-            <a
-              data-on:click="$filter='completed'; @get('/todos/sse')"
-              data-class:selected="$filter === 'completed'"
-              href="javascript:void(0)"
-              >Completed</a
-            >
-          </li>
-        </ul>
-        {{clear-completed|safe}}
-      </footer>
+
+      {{initial-list|safe}}
     </section>
     <footer class="info">
-      <p>Double-click to edit a todo</p>
+      <p>Double-click to edit, Enter to add</p>
     </footer>
   </body>
 </html>

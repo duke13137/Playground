@@ -1,20 +1,14 @@
-(ns todoapp ;; Datastar Todo App
+(ns todoapp
   (:require
    [clojure.string :as str]
    [hiccup2.core :as h]
-   [cheshire.core :as json]
-   [selmer.parser :refer [render-file]]
-   [starfederation.datastar.clojure.api :as d*]
-   [starfederation.datastar.clojure.adapter.http-kit2 :as hk]))
+   [selmer.parser :refer [render-file]])
+  (:import
+   [java.lang Exception]))
 
-#?(:bb  (do (require '[babashka.pods :as pods])
-            (pods/load-pod 'huahaiy/datalevin "0.10.7")
+#?(:bb  (do (babashka.pods/load-pod 'huahaiy/datalevin "0.10.7")
             (require '[pod.huahaiy.datalevin :as d]))
    :clj (require '[datalevin.core :as d]))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Datalevin
-;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (def schema
   {:todo/name {:db/valueType :db.type/string}
@@ -23,11 +17,8 @@
    :todo/done {:db/valueType :db.type/boolean}})
 
 (def db-path (or (System/getenv "BB_TODOS_DB_PATH") "/tmp/bb-todos"))
-
-(def conn (d/get-conn db-path schema))
-
-(defn db []
-  (d/db conn))
+(def conn (d/create-conn db-path schema {:wal? false}))
+(defn db [] (d/db conn))
 
 (declare get-all-todos)
 
@@ -38,7 +29,6 @@
   (d/pull (db) [:db/id :todo/name :todo/done] id))
 
 (defn ->todo
-  "Convert Datalevin pull result to component-friendly map."
   [m]
   {:id (:db/id m) :name (:todo/name m) :done (boolean (:todo/done m))})
 
@@ -81,15 +71,13 @@
 
 (ensure-todo-name-keys!)
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; CRUD
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 (defn add-todo! [name]
   (if-let [name (normalize-todo-name name)]
-    (transact-todo! [{:todo/name name
-                      :todo/name-key (todo-name-key name)
-                      :todo/done false}])
+    (if (find-duplicate-todo name)
+      false
+      (transact-todo! [{:todo/name name
+                        :todo/name-key (todo-name-key name)
+                        :todo/done false}]))
     false))
 
 (defn toggle-todo! [id]
@@ -98,8 +86,10 @@
 
 (defn update-todo-name! [id name]
   (if-let [name (normalize-todo-name name)]
-    (transact-todo! [[:db/add id :todo/name name]
-                     [:db/add id :todo/name-key (todo-name-key name)]])
+    (if (find-duplicate-todo name :exclude-id id)
+      false
+      (transact-todo! [[:db/add id :todo/name name]
+                       [:db/add id :todo/name-key (todo-name-key name)]]))
     false))
 
 (defn remove-todo! [id]
@@ -113,23 +103,26 @@
     (when (seq completed-ids)
       (d/transact! conn (mapv #(vector :db/retractEntity %) completed-ids)))))
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Queries
-;; NOTE: Boolean Datalog queries are broken in Datalevin pod
-;; (e.g. [?e :todo/done false] matches true). Use pull + Clojure filter.
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 (defn get-all-todos []
   (->> (todo-ids)
        (map #(->todo (pull-todo %)))
        (sort-by :id)))
 
-(defn filtered-todos [filter-name]
-  (let [all (get-all-todos)]
-    (case filter-name
-      "active"    (remove :done all)
-      "completed" (filter :done all)
-      all)))
+(defn todo-matches-query? [query {:keys [name]}]
+  (if-let [query (todo-name-key query)]
+    (str/includes? (todo-name-key name) query)
+    true))
+
+(defn filtered-todos
+  ([filter-name]
+   (filtered-todos filter-name nil))
+  ([filter-name query]
+   (let [all (get-all-todos)]
+     (->> (case filter-name
+            "active"    (remove :done all)
+            "completed" (filter :done all)
+            all)
+          (filter #(todo-matches-query? query %))))))
 
 (defn get-todo [id]
   (->todo (pull-todo id)))
@@ -140,242 +133,203 @@
 (defn todos-completed []
   (count (filter :done (get-all-todos))))
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Helpers
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 (defn html [hiccup]
   (str (h/html hiccup)))
 
-(defn patch-signals! [sse m]
-  (d*/patch-signals! sse (json/generate-string m)))
+(defn get-param [req k]
+  (let [v (get (:params req) k)]
+    (if (sequential? v) (first v) v)))
 
-(defn flash-todo-script [id]
-  (str "(() => { "
-       "const el = document.getElementById('todo-" id "'); "
-       "if (!el) return; "
-       "el.classList.remove('duplicate-flash'); "
-       "void el.offsetWidth; "
-       "el.classList.add('duplicate-flash'); "
-       "el.scrollIntoView({block: 'nearest', behavior: 'smooth'}); "
-       "setTimeout(() => el.classList.remove('duplicate-flash'), 900); "
-       "})()"))
+(defn get-id [req]
+  (parse-long (get-in req [:path-params 0])))
 
-(defn get-signals [req]
-  (let [raw (d*/get-signals req)]
-    (when raw
-      (json/parse-string (if (string? raw) raw (slurp raw)) true))))
+(def list-state-include "#todo-list-form, #todo-input")
 
-(defn path-id [req]
-  (parse-long (first (:path-params req))))
+(defn get-filter-name [req]
+  (or (get-param req "filter") "all"))
 
-(def streams (atom {}))
-(def editing-users (atom {}))
+(defn get-search-query [req]
+  (get-param req "title"))
 
-(defn start-editing! [todo-id cid]
-  (swap! editing-users assoc todo-id cid))
-
-(defn stop-editing! [todo-id]
-  (swap! editing-users dissoc todo-id))
-
-(defn remove-stream-by-sse! [sse]
-  (swap! streams (fn [m]
-                   (into {} (remove (fn [[_ v]] (= sse (:sse v))) m)))))
-
-(defn update-stream-filter! [cid filter-name]
-  (when (and cid (seq cid))
-    (swap! streams update cid assoc :filter (or filter-name "all"))))
-
-(defn remove-stream-by-cid! [cid]
-  (swap! streams dissoc cid))
-
-(defn sse-response [handler & {:keys [on-close]}]
-  (fn [req]
-    (hk/->sse-response req
-      {hk/on-open
-       (fn [sse]
-         (d*/with-open-sse sse
-           (handler req sse)))
-       hk/on-close
-       (fn [sse status]
-         (when on-close
-           (on-close sse status))
-         (println status))
-       hk/on-exception
-       (fn [e]
-         (println e))})))
-
-(defn use-sse [handler]
-  (sse-response handler))
-
-(defn use-sse-stream [handler]
-  (sse-response handler :on-close (fn [sse _] (remove-stream-by-sse! sse))))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Components
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defn todo-item [{:keys [id name done]}]
+(defn todo-item [{:keys [id name done]} & {:keys [highlight-id]}]
   [:li {:id (str "todo-" id)
-        :class (when done "completed")}
+        :class (cond-> (when done "completed")
+                (= id highlight-id) (str " duplicate-flash"))}
    [:div.view
     [:input.toggle {:type "checkbox"
                     :checked done
-                    :data-on:click (str "@patch('/todos/sse/done/" id "')")}]
-    [:label {:data-on:dblclick
-             (str "@get('/todos/sse/edit/" id "'); "
-                  "(() => { let tries = 0; const focusEdit = () => { "
-                  "const input = document.querySelector('#todo-" id " .edit'); "
-                  "if (input) { input.focus(); input.select(); } "
-                  "else if (tries < 10) { tries += 1; requestAnimationFrame(focusEdit); } "
-                  "}; requestAnimationFrame(focusEdit); })()")}
+                    :hx-patch (str "/todos/" id)
+                    :hx-include list-state-include
+                    :hx-target "#todo-list"
+                    :hx-swap "outerHTML"}]
+    [:label {:hx-get (str "/todos/" id "/edit")
+             :hx-trigger "dblclick"
+             :hx-target (str "#todo-" id)
+             :hx-swap "outerHTML"}
      name]
     [:button.destroy
-      {:data-on:click (str "@delete('/todos/sse/" id "')")}]]])
+      {:hx-delete (str "/todos/" id)
+       :hx-include list-state-include
+       :hx-target "#todo-list"
+       :hx-swap "outerHTML"}]]])
 
 (defn todo-edit-form [id name]
   [:li {:id (str "todo-" id) :class "editing"}
-   [:input.edit {:data-bind:edittext ""
-                 :data-on:keydown "evt.key === 'Enter' && (evt.preventDefault(), evt.target.blur())"
-                 :data-on:blur (str "@patch('/todos/sse/name/" id "')")
-                 :autofocus true}]])
+   [:form {:hx-put (str "/todos/" id)
+           :hx-include list-state-include
+           :hx-target "#todo-list"
+           :hx-swap "outerHTML"}
+    [:input.edit {:type "text"
+                  :name "edit-title"
+                  :value name
+                  :autofocus true
+                  :required true}]]])
 
-(defn todo-list [todos]
-  (map todo-item todos))
+(defn todo-add-form []
+  [:form {:id "add-form"
+          :hx-post "/todos"
+          :hx-target "#add-form"
+          :hx-swap "outerHTML"
+          :hx-include "#todo-list-form input[name='filter']"}
+   [:input#todo-input.new-todo {:type "text"
+                                :aria-label "New todo"
+                                :name "title"
+                                :placeholder "What needs to be done?"
+                                :autocomplete "off"
+                                :required true
+                                :autofocus true
+                                :hx-get "/todos/list"
+                                :hx-trigger "input changed delay:500ms"
+                                :hx-include "#todo-list-form input[name='filter']"
+                                :hx-target "#todo-list"
+                                :hx-swap "outerHTML"
+                                :hx-sync "closest form:abort"}]])
 
-(defn item-count []
-  (let [n (get-items-left)]
-    [:span#todo-count.todo-count
-     [:strong n] (if (= 1 n) " item left" " items left")]))
+(defn todo-count-label [n]
+  (str (if (= 1 n) "item" "items") " left"))
 
-(defn clear-completed-button []
-  [:button#clear-completed.clear-completed
-   {:data-on:click "@delete('/todos/sse/clear')"
-    :class (when-not (pos? (todos-completed)) "hidden")}
-   "Clear completed"])
+(defn filter-link [filter-name label current-filter]
+  [:li
+   [:a (cond-> {:href "#"
+                :hx-get (str "/todos/list?filter=" filter-name)
+                :hx-include "#todo-input"
+                :hx-target "#todo-list"
+                :hx-swap "outerHTML"}
+         (= filter-name current-filter) (assoc :class "selected"))
+    label]])
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Patch helper
-;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defn todo-list-section [todos filter-name {:keys [highlight-id oob?]}]
+  [:div (cond-> {:id "todo-list"}
+          oob? (assoc :hx-swap-oob "outerHTML"))
+   [:form {:id "todo-list-form"}
+    [:input {:type "hidden" :name "filter" :value filter-name}]
+    [:section.main
+     [:input#toggle-all.toggle-all {:type "checkbox"
+                                    :checked (and (seq todos)
+                                                  (every? :done todos))}]
+     [:label {:for "toggle-all"} "Mark all as complete"]
+     [:ul.todo-list
+      (map #(todo-item % :highlight-id highlight-id) todos)]]
+    [:footer.footer
+     [:span.todo-count
+      [:strong (get-items-left)] " " (todo-count-label (get-items-left))]
+     [:ul.filters
+      (filter-link "all" "All" filter-name)
+      (filter-link "active" "Active" filter-name)
+      (filter-link "completed" "Completed" filter-name)]
+     (when (pos? (todos-completed))
+       [:button.clear-completed
+        {:hx-post "/todos/clear"
+         :hx-include list-state-include
+         :hx-target "#todo-list"
+         :hx-swap "outerHTML"}
+        "Clear completed"])]]])
 
-(defn patch-all! [sse filter-name]
-  (let [todos (filtered-todos (or filter-name "all"))]
-    (d*/patch-elements! sse (html [:ul#todo-list.todo-list (todo-list todos)]))
-    (d*/patch-elements! sse (html (item-count)))
-    (d*/patch-elements! sse (html (clear-completed-button)))))
-
-(defn broadcast! []
-  (doseq [[cid {:keys [sse filter]}] @streams]
-    (try
-      (patch-all! sse filter)
-      (catch Exception _
-        (swap! streams dissoc cid)))))
-
-(defn respond! [sse filter & {:keys [broadcast? signals script]}]
-  (patch-all! sse filter)
-  (when broadcast? (broadcast!))
-  (when signals (patch-signals! sse signals))
-  (when script (d*/execute-script! sse script))
-  (d*/close-sse! sse))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; SSE Handlers
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defn list-todo [req sse]
-  (let [signals (or (get-signals req) {})
-        {:keys [filter cid]} signals
-        filter (or filter "all")]
-    (update-stream-filter! cid filter)
-    (respond! sse filter)))
-
-(defn add-todo [req sse]
-  (let [signals (or (get-signals req) {})
-         {:keys [todo filter]} signals
-          filter (or filter "all")]
-    (let [created? (add-todo! todo)
-          duplicate-id (:id (when-not created?
-                              (find-duplicate-todo todo)))]
-      (respond! sse filter
-                :broadcast? created?
-                :signals (when created? {:todo ""})
-                :script (when duplicate-id (flash-todo-script duplicate-id))))))
-
-(defn edit-todo [req sse]
-  (let [signals (or (get-signals req) {})
-        id (path-id req)
-        todo (get-todo id)]
-    (patch-signals! sse {:edittext (:name todo)})
-    (d*/patch-elements! sse (html (todo-edit-form id (:name todo))))
-    (d*/close-sse! sse)))
-
-(defn save-todo [req sse]
-  (let [signals (or (get-signals req) {})
-         {:keys [edittext filter]} signals
-          filter (or filter "all")
-          id (path-id req)]
-    (let [saved? (update-todo-name! id edittext)
-          duplicate-id (:id (when-not saved?
-                              (find-duplicate-todo edittext :exclude-id id)))]
-      (respond! sse filter
-                :broadcast? saved?
-                :signals (when saved? {:edittext ""})
-                :script (when duplicate-id (flash-todo-script duplicate-id))))))
-
-(defn toggle-todo [req sse]
-  (let [signals (or (get-signals req) {})
-        {:keys [filter]} signals
-        filter (or filter "all")
-        id (path-id req)]
-    (toggle-todo! id)
-    (respond! sse filter :broadcast? true)))
-
-(defn delete-todo [req sse]
-  (let [signals (or (get-signals req) {})
-        {:keys [filter]} signals
-        filter (or filter "all")
-        id (path-id req)]
-    (remove-todo! id)
-    (respond! sse filter :broadcast? true)))
-
-(defn clear-todo [req sse]
-  (let [signals (or (get-signals req) {})
-        {:keys [filter]} signals
-        filter (or filter "all")]
-    (remove-all-completed!)
-    (respond! sse filter :broadcast? true)))
-
-(defn stream-todos [req sse]
-  (let [signals (or (get-signals req) {})
-        {:keys [filter cid]} signals
-        filter (or filter "all")]
-    (when (and cid (seq cid))
-      (swap! streams assoc cid {:sse sse :filter filter}))
-    (patch-all! sse filter)))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Page handler
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defn app-index [req]
-  (let [todos (get-all-todos)]
+(defn list-todos [req]
+  (let [filter-name (get-filter-name req)
+        query (get-search-query req)
+        highlight-id (get-param req "highlight-id")
+        todos (filtered-todos filter-name query)]
     {:status 200
-     :body (render-file "todo.html"
-                        {:initial-todos (html (todo-list todos))
-                         :item-count (html (item-count))
-                         :clear-completed (html (clear-completed-button))
-                         :client-id (str (java.util.UUID/randomUUID))})}))
+     :headers {"Content-Type" "text/html"}
+     :body (html (todo-list-section todos filter-name {:highlight-id highlight-id}))}))
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Routes
-;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defn add-todo-handler [req]
+  (let [title (get-param req "title")
+        filter-name (get-filter-name req)
+        created? (add-todo! title)
+        highlight-id (:id (when-not created? (find-duplicate-todo title)))]
+    {:status 200
+     :headers {"Content-Type" "text/html"}
+     :body (str (html (todo-add-form))
+                (html (todo-list-section (filtered-todos filter-name)
+                                         filter-name
+                                         {:highlight-id highlight-id
+                                          :oob? true})))}))
+
+(defn toggle-todo-handler [req]
+  (let [id (get-id req)
+        filter-name (get-filter-name req)
+        query (get-search-query req)]
+    (toggle-todo! id)
+    {:status 200
+     :headers {"Content-Type" "text/html"}
+     :body (html (todo-list-section (filtered-todos filter-name query)
+                                    filter-name
+                                    {}))}))
+
+(defn delete-todo-handler [req]
+  (let [id (get-id req)
+        filter-name (get-filter-name req)
+        query (get-search-query req)]
+    (remove-todo! id)
+    {:status 200
+     :headers {"Content-Type" "text/html"}
+     :body (html (todo-list-section (filtered-todos filter-name query)
+                                    filter-name
+                                    {}))}))
+
+(defn edit-todo-handler [req]
+  (let [id (get-id req)
+        todo (get-todo id)]
+    {:status 200
+     :headers {"Content-Type" "text/html"}
+     :body (html (todo-edit-form id (:name todo)))}))
+
+(defn save-todo-handler [req]
+  (let [id (get-id req)
+        title (or (get-param req "edit-title")
+                  (get-param req "title"))
+        filter-name (get-filter-name req)
+        query (get-search-query req)
+        saved? (update-todo-name! id title)
+        highlight-id (:id (when-not saved? (find-duplicate-todo title :exclude-id id)))]
+    {:status 200
+     :headers {"Content-Type" "text/html"}
+     :body (html (todo-list-section (filtered-todos filter-name query)
+                                    filter-name
+                                    {:highlight-id highlight-id}))}))
+
+(defn clear-todo-handler [req]
+  (let [filter-name (get-filter-name req)
+        query (get-search-query req)]
+    (remove-all-completed!)
+    {:status 200
+     :headers {"Content-Type" "text/html"}
+     :body (html (todo-list-section (filtered-todos filter-name query)
+                                    filter-name
+                                    {}))}))
+
+(defn app-index [_req]
+  {:status 200
+   :body (render-file "todo.html" {:initial-list (html (todo-list-section (get-all-todos) "all" {}))})})
 
 (def routes
-   {"GET /todos"               app-index
-    "GET /todos/sse"           (use-sse-stream #'stream-todos)
-    "POST /todos/sse"          (use-sse #'add-todo)
-    "GET /todos/sse/edit/*"    (use-sse #'edit-todo)
-    "PATCH /todos/sse/name/*"  (use-sse #'save-todo)
-    "PATCH /todos/sse/done/*"  (use-sse #'toggle-todo)
-    "DELETE /todos/sse/clear"  (use-sse #'clear-todo)
-    "DELETE /todos/sse/*"      (use-sse #'delete-todo)})
+  {"GET /todos"         app-index
+   "GET /todos/list"    list-todos
+   "POST /todos"        add-todo-handler
+   "PATCH /todos/*"     toggle-todo-handler
+   "DELETE /todos/*"    delete-todo-handler
+   "GET /todos/*/edit"  edit-todo-handler
+   "PUT /todos/*"       save-todo-handler
+   "POST /todos/clear"  clear-todo-handler})

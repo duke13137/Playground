@@ -1,19 +1,15 @@
 #!/usr/bin/env bb
 (ns core 
   (:require 
-    [clojure.string :as str]
     [cheshire.core :as json]
     [hiccup2.core :as h]
     [org.httpkit.server]
     [ring.middleware.params :refer [wrap-params]]
     [clj-simple-router.core :as router]
-    [promesa.core :as p]
-    [promesa.exec.csp :as sp :refer [go >! <!]]
     [selmer.parser :refer [render-file]]
     [starfederation.datastar.clojure.api :as d*]
     [starfederation.datastar.clojure.adapter.http-kit2 :as hk]
     [todoapp]))
-
 
 (comment
 
