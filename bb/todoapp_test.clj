@@ -47,9 +47,10 @@
           (cleanup-test-todos! prefix))))))
 
 (deftest test-todo-list-section-contains-footer
-  (testing "Rendered section includes form and footer"
+  (testing "Rendered section includes list-state container and footer"
     (let [markup (sut/html (sut/todo-list-section [] "all" {}))]
       (is (str/includes? markup "todo-list-form"))
+      (is (str/includes? markup "<div id=\"todo-list-form\""))
       (is (str/includes? markup "name=\"filter\""))
       (is (str/includes? markup "class=\"main\""))
       (is (str/includes? markup "id=\"toggle-all\""))
@@ -67,6 +68,7 @@
       (is (str/includes? markup "hx-get=\"/todos/list\""))
       (is (str/includes? markup "hx-trigger=\"input changed delay:500ms\""))
       (is (str/includes? markup "hx-target=\"#todo-list\""))
+      (is (str/includes? markup "hx-swap=\"outerMorph\""))
       (is (str/includes? markup "hx-sync=\"closest form:abort\""))
       (is (str/includes? markup "name=\"title\""))
       (is (not (str/includes? markup "class=\"add-todo\"")))
@@ -82,7 +84,7 @@
               body (:body response)]
           (is (= 200 (:status response)))
           (is (str/includes? body "id=\"add-form\""))
-          (is (str/includes? body "hx-swap-oob=\"outerHTML\""))
+          (is (str/includes? body "hx-swap-oob=\"outerMorph\""))
           (is (str/includes? body name)))
         (finally
           (cleanup-test-todos! prefix))))))
@@ -92,8 +94,10 @@
     (let [markup (sut/html (sut/todo-edit-form 1 "test"))]
       (is (str/includes? markup "autofocus"))
       (is (str/includes? markup "hx-put"))
+      (is (str/includes? markup "hx-swap=\"outerMorph\""))
       (is (str/includes? markup "name=\"edit-title\""))
-      (is (str/includes? markup "hx-include=\"#todo-list-form, #todo-input\""))
+      (is (str/includes? markup "id=\"todo-edit-1\""))
+      (is (str/includes? markup "hx-include=\"#todo-list-form, #todo-input:not(:invalid)\""))
       (is (str/includes? markup "todo-1")))))
 
 (deftest test-list-mutations-include-search-input
@@ -103,8 +107,8 @@
                                   [{:id 1 :name "test" :done true}]
                                   "all"
                                   {}))]
-      (is (str/includes? item-markup "hx-include=\"#todo-list-form, #todo-input\""))
-      (is (str/includes? list-markup "hx-include=\"#todo-list-form, #todo-input\"")))))
+      (is (str/includes? item-markup "hx-include=\"#todo-list-form, #todo-input:not(:invalid)\""))
+      (is (str/includes? list-markup "hx-include=\"#todo-list-form, #todo-input:not(:invalid)\"")))))
 
 (deftest test-toggle-preserves-search-query
   (testing "Toggle response remains narrowed by the active search"
@@ -158,7 +162,35 @@
                                      "title" "alpha"
                                      "edit-title" renamed}}))]
           (is (str/includes? body renamed))
+          (is (str/includes? body sut/focus-todo-input-script))
           (is (not (str/includes? body beta))))
+        (finally
+          (cleanup-test-todos! prefix))))))
+
+(deftest test-save-duplicate-keeps-inline-edit-focused
+  (testing "Duplicate edit rejection keeps the edited item in edit mode"
+    (let [prefix (str "test-save-dup-focus-" (random-uuid))
+          sleep-name (str prefix "-sleep")
+          walk-name (str prefix "-walk")
+          duplicate-input (str " " (str/upper-case sleep-name) " ")]
+      (try
+        (sut/add-todo! sleep-name)
+        (sut/add-todo! walk-name)
+        (let [todos (filter #(str/starts-with? (:name %) prefix) (sut/get-all-todos))
+              sleep-id (:id (first (filter #(= sleep-name (:name %)) todos)))
+              walk-id (:id (first (filter #(= walk-name (:name %)) todos)))
+              body (:body (sut/save-todo-handler
+                           {:path-params [(str walk-id)]
+                            :params {"filter" "all"
+                                     "edit-title" duplicate-input}}))]
+          (is (str/includes? body (str "id=\"todo-" walk-id "\"")))
+          (is (str/includes? body "class=\"editing\""))
+          (is (str/includes? body "name=\"edit-title\""))
+          (is (str/includes? body (str "value=\"" duplicate-input "\"")))
+          (is (str/includes? body (str "id=\"todo-" sleep-id "\"")))
+          (is (str/includes? body "duplicate-flash"))
+          (is (str/includes? body (sut/focus-edit-input-script walk-id)))
+          (is (not (str/includes? body sut/focus-todo-input-script))))
         (finally
           (cleanup-test-todos! prefix))))))
 

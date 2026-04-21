@@ -143,7 +143,16 @@
 (defn get-id [req]
   (parse-long (get-in req [:path-params 0])))
 
-(def list-state-include "#todo-list-form, #todo-input")
+(def search-input-include "#todo-input:not(:invalid)")
+(def list-state-include (str "#todo-list-form, " search-input-include))
+(def list-swap "outerMorph")
+(def focus-todo-input-script
+  "<script>setTimeout(function(){document.getElementById('todo-input')?.focus()},0)</script>")
+
+(defn focus-edit-input-script [id]
+  (str "<script>setTimeout(function(){document.querySelector('#todo-"
+       id
+       " .edit')?.focus()},0)</script>"))
 
 (defn get-filter-name [req]
   (or (get-param req "filter") "all"))
@@ -161,25 +170,26 @@
                     :hx-patch (str "/todos/" id)
                     :hx-include list-state-include
                     :hx-target "#todo-list"
-                    :hx-swap "outerHTML"}]
+                    :hx-swap list-swap}]
     [:label {:hx-get (str "/todos/" id "/edit")
              :hx-trigger "dblclick"
              :hx-target (str "#todo-" id)
-             :hx-swap "outerHTML"}
+             :hx-swap "outerMorph"}
      name]
     [:button.destroy
       {:hx-delete (str "/todos/" id)
        :hx-include list-state-include
        :hx-target "#todo-list"
-       :hx-swap "outerHTML"}]]])
+       :hx-swap list-swap}]]])
 
 (defn todo-edit-form [id name]
   [:li {:id (str "todo-" id) :class "editing"}
    [:form {:hx-put (str "/todos/" id)
            :hx-include list-state-include
            :hx-target "#todo-list"
-           :hx-swap "outerHTML"}
+           :hx-swap list-swap}
     [:input.edit {:type "text"
+                  :id (str "todo-edit-" id)
                   :name "edit-title"
                   :value name
                   :autofocus true
@@ -202,7 +212,7 @@
                                 :hx-trigger "input changed delay:500ms"
                                 :hx-include "#todo-list-form input[name='filter']"
                                 :hx-target "#todo-list"
-                                :hx-swap "outerHTML"
+                                :hx-swap list-swap
                                 :hx-sync "closest form:abort"}]])
 
 (defn todo-count-label [n]
@@ -212,16 +222,16 @@
   [:li
    [:a (cond-> {:href "#"
                 :hx-get (str "/todos/list?filter=" filter-name)
-                :hx-include "#todo-input"
+                :hx-include search-input-include
                 :hx-target "#todo-list"
-                :hx-swap "outerHTML"}
+                :hx-swap list-swap}
          (= filter-name current-filter) (assoc :class "selected"))
     label]])
 
-(defn todo-list-section [todos filter-name {:keys [highlight-id oob?]}]
+(defn todo-list-section [todos filter-name {:keys [highlight-id oob? edit-id edit-name]}]
   [:div (cond-> {:id "todo-list"}
-          oob? (assoc :hx-swap-oob "outerHTML"))
-   [:form {:id "todo-list-form"}
+          oob? (assoc :hx-swap-oob list-swap))
+   [:div {:id "todo-list-form"}
     [:input {:type "hidden" :name "filter" :value filter-name}]
     [:section.main
      [:input#toggle-all.toggle-all {:type "checkbox"
@@ -229,7 +239,11 @@
                                                   (every? :done todos))}]
      [:label {:for "toggle-all"} "Mark all as complete"]
      [:ul.todo-list
-      (map #(todo-item % :highlight-id highlight-id) todos)]]
+      (map (fn [{:keys [id name] :as todo}]
+             (if (= id edit-id)
+               (todo-edit-form id (or edit-name name))
+               (todo-item todo :highlight-id highlight-id)))
+           todos)]]
     [:footer.footer
      [:span.todo-count
       [:strong (get-items-left)] " " (todo-count-label (get-items-left))]
@@ -242,7 +256,7 @@
         {:hx-post "/todos/clear"
          :hx-include list-state-include
          :hx-target "#todo-list"
-         :hx-swap "outerHTML"}
+         :hx-swap list-swap}
         "Clear completed"])]]])
 
 (defn list-todos [req]
@@ -306,9 +320,17 @@
         highlight-id (:id (when-not saved? (find-duplicate-todo title :exclude-id id)))]
     {:status 200
      :headers {"Content-Type" "text/html"}
-     :body (html (todo-list-section (filtered-todos filter-name query)
-                                    filter-name
-                                    {:highlight-id highlight-id}))}))
+     :body (if saved?
+             (str (html (todo-list-section (filtered-todos filter-name query)
+                                           filter-name
+                                           {}))
+                  focus-todo-input-script)
+             (str (html (todo-list-section (filtered-todos filter-name query)
+                                           filter-name
+                                           {:highlight-id highlight-id
+                                            :edit-id id
+                                            :edit-name title}))
+                  (focus-edit-input-script id)))}))
 
 (defn clear-todo-handler [req]
   (let [filter-name (get-filter-name req)
