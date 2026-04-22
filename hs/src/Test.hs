@@ -47,12 +47,19 @@ testRoute = withResource acquirePool releasePool \getPool ->
       assertStatus 200 resp
       assertBodyContains "Todos" resp
       assertBodyContains "What needs to be done?" resp
+      assertBodyContains "hx-get=\"/todos/list\"" resp
+      assertBodyContains "hx-trigger=\"input changed delay:500ms\"" resp
+      assertBodyContains "hx-include=\"#todo-list-form [name=&#39;filter&#39;], #todo-input\"" resp
+      assertBodyContains "hx-sync=\"closest form:abort\"" resp
   , testWai (appWithPool getPool) "UI Todo CRUD" do
       pool <- liftIO getPool
       _ <- liftIO $ runDb pool truncateTodosSession
 
       -- 1. Create
-      _ <- Test.postWithHeaders "/todos" "title=Buy+milk" [("Content-Type", "application/x-www-form-urlencoded")]
+      respAdd <- Test.postWithHeaders "/todos" "title=Buy+milk" [("Content-Type", "application/x-www-form-urlencoded")]
+      assertStatus 200 respAdd
+      assertBodyContains "id=\"add-form\"" respAdd
+      assertBodyContains "hx-swap-oob=\"outerMorph\"" respAdd
       respList <- Test.get "/todos/list"
       assertStatus 200 respList
       assertBodyContains "Buy milk" respList
@@ -73,7 +80,7 @@ testRoute = withResource acquirePool releasePool \getPool ->
 
       -- 3. Update
       let updatePath = "/todos/" <> idStr
-      respUpdate <- Test.srequest $ Test.buildRequestWithHeaders PUT updatePath "title=Buy+water" [("Content-Type", "application/x-www-form-urlencoded")]
+      respUpdate <- Test.srequest $ Test.buildRequestWithHeaders PUT updatePath "edit-title=Buy+water" [("Content-Type", "application/x-www-form-urlencoded")]
       assertStatus 200 respUpdate
       assertBodyContains "Buy water" respUpdate
 
@@ -94,12 +101,19 @@ testRoute = withResource acquirePool releasePool \getPool ->
       assertStatus 200 respDupAdd
       assertBodyContains "todo-highlight" respDupAdd
 
-      -- Search for "Task A"
-      respSearch <- Test.get "/todos/list?search=Task+A"
+      -- Search for token prefixes of "Task A"
+      respSearch <- Test.get "/todos/list?title=Ta%20A"
       assertStatus 200 respSearch
       assertBodyContains "Task A" respSearch
       let bodyStr = decodeUtf8 (simpleBody respSearch)
       _ <- liftIO $ assertBool "should not contain Task B" $ not $ "Task B" `isInfixOf` bodyStr
+
+      respTokenPrefixSearch <- Test.get "/todos/list?title=A"
+      assertStatus 200 respTokenPrefixSearch
+      assertBodyContains "Task A" respTokenPrefixSearch
+      let tokenPrefixBodyStr = decodeUtf8 (simpleBody respTokenPrefixSearch)
+      _ <- liftIO $ assertBool "token-prefix search should not contain Task B" $ not $ "Task B" `isInfixOf` tokenPrefixBodyStr
+      _ <- liftIO $ assertBool "token-prefix search should not contain Task C" $ not $ "Task C" `isInfixOf` tokenPrefixBodyStr
 
       -- Get all IDs and toggle first two
       Right allTodos <- liftIO $ runDb pool getTodosSession
@@ -109,7 +123,7 @@ testRoute = withResource acquirePool releasePool \getPool ->
         (a:b:_) -> do
           let bStr = encodeUtf8 (show b :: Text)
           respDupUpdate <- Test.srequest $
-            Test.buildRequestWithHeaders PUT ("/todos/" <> bStr) "title=Task+A" [("Content-Type", "application/x-www-form-urlencoded")]
+            Test.buildRequestWithHeaders PUT ("/todos/" <> bStr) "edit-title=Task+A" [("Content-Type", "application/x-www-form-urlencoded")]
           assertStatus 200 respDupUpdate
 
           Right afterDupUpdate <- liftIO $ runDb pool getTodosSession
