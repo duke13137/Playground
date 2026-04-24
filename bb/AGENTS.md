@@ -42,6 +42,13 @@ fd -e clj |& entr -r bb -Dguardrails.enabled=true core.clj
 curl 127.0.0.1:3000/
 ```
 
+## Clojure Parenthesis Repair
+
+**IMPORTANT:** Do NOT try to manually repair parenthesis errors.
+If you encounter unbalanced delimiters, run `brepl balance` on the file
+instead of attempting to fix them yourself. If the tool doesn't work,
+report to the user that they need to fix the delimiter error manually.
+
 - To **evaluate clojure expressions** via `brepl`
 
 `brepl` tries ports in order: `.nrepl-port` file, then 9999 (clojure default), then 1666 (bb server). Always prefer `brepl` without `-p` unless targeting a specific REPL.

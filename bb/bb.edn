@@ -2,6 +2,9 @@
  :deps {com.fulcrologic/guardrails {:mvn/version "RELEASE"}
         vvvvalvalval/scope-capture {:mvn/version "RELEASE"}
 
+        cheshire/cheshire          {:mvn/version "RELEASE"}
+        org.babashka/cli           {:mvn/version "RELEASE"}
+
         dev.data-star.clojure/sdk {:mvn/version "RELEASE"}
         dev.data-star.clojure/http-kit {:mvn/version "RELEASE"}
         io.github.babashka/sci.nrepl {:mvn/version "RELEASE"}
