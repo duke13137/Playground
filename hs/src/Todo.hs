@@ -6,47 +6,270 @@
 {-# LANGUAGE NoFieldSelectors      #-}
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE PatternSynonyms       #-}
 {-# LANGUAGE QuasiQuotes           #-}
 {-# LANGUAGE TypeApplications      #-}
 module Todo
   ( Todo(..)
-  , htmx
-  , todoRoutes
-  , getTodosPage
-  , getTodoListPartial
-  , addTodo
-  , toggleTodo
-  , deleteTodo
-  , clearCompleted
-  , editTodoForm
-  , updateTodo
+  , TodoRoutes
+  , todoServer
   , getTodosSession
-  , getTodoSession
   , addTodoSession
   , toggleTodoSession
-  , deleteTodoSession
   , clearCompletedSession
-  , updateTodoTitleSession
-  , todoPage
-  , todoListSection
-  , todoItem
   ) where
 
+import Data.Aeson
 import Data.Text qualified as T
 import Data.Vector qualified as V
-import Optics
-import Prelude hiding (id)
+import Prelude hiding (Handler, id)
 
-import Colog
 import Database
-import Debug.Breakpoint
 import Hasql.TH
 import Htmx
-import Network.Wai (Middleware, rawPathInfo, requestMethod)
-import Web.Twain as Twain
+import Http
+import Servant.API
+import Servant.Server
+import Servant.Server.Generic (AsServer)
+import Servant.Server.Internal.Handler (pattern MkHandler)
+import Web.FormUrlEncoded
 
 data Todo = Todo { id :: Int64, title :: Text, completed :: Bool }
   deriving (Eq, Show)
+
+instance ToJSON Todo where
+  toJSON todo =
+    object
+      [ "id" .= todo.id
+      , "title" .= todo.title
+      , "completed" .= todo.completed
+      ]
+
+data TodoListState = TodoListState
+  { stateFilter :: Maybe Text
+  , stateTitle  :: Maybe Text
+  } deriving (Eq, Show)
+
+instance FromJSON TodoListState where
+  parseJSON = withObject "TodoListState" \obj ->
+    TodoListState
+      <$> obj .:? "filter"
+      <*> obj .:? "title"
+
+instance FromForm TodoListState where
+  fromForm form =
+    TodoListState
+      <$> parseMaybe "filter" form
+      <*> parseMaybe "title" form
+
+data AddTodoRequest = AddTodoRequest
+  { addTitle :: Text
+  , addState :: TodoListState
+  } deriving (Eq, Show)
+
+instance FromJSON AddTodoRequest where
+  parseJSON = withObject "AddTodoRequest" \obj ->
+    AddTodoRequest
+      <$> obj .:? "title" .!= ""
+      <*> parseJSON (Object obj)
+
+instance FromForm AddTodoRequest where
+  fromForm form =
+    AddTodoRequest
+      <$> parseUnique "title" form
+      <*> fromForm form
+
+data UpdateTodoRequest = UpdateTodoRequest
+  { updateTitle :: Text
+  , updateState :: TodoListState
+  } deriving (Eq, Show)
+
+instance FromJSON UpdateTodoRequest where
+  parseJSON = withObject "UpdateTodoRequest" \obj -> do
+    editTitle <- obj .:? "edit-title"
+    title <- obj .:? "title"
+    UpdateTodoRequest
+      (fromMaybe "" (editTitle <|> title))
+      <$> parseJSON (Object obj)
+
+instance FromForm UpdateTodoRequest where
+  fromForm form = do
+    editTitle <- parseMaybe "edit-title" form
+    title <- parseMaybe "title" form
+    UpdateTodoRequest
+      (fromMaybe "" (editTitle <|> title))
+      <$> fromForm form
+
+data TodoMutationStatus
+  = TodoCreated
+  | TodoDuplicate
+  | TodoEmptyTitle
+  | TodoToggled
+  | TodoDeleted
+  | TodoCleared
+  | TodoUpdated
+  | TodoUpdateDuplicate
+  deriving (Eq, Show)
+
+instance ToJSON TodoMutationStatus where
+  toJSON = \case
+    TodoCreated         -> "created"
+    TodoDuplicate       -> "duplicate"
+    TodoEmptyTitle      -> "empty-title"
+    TodoToggled         -> "toggled"
+    TodoDeleted         -> "deleted"
+    TodoCleared         -> "cleared"
+    TodoUpdated         -> "updated"
+    TodoUpdateDuplicate -> "update-duplicate"
+
+data TodosView = TodosView
+  { todos       :: [Todo]
+  , filterBy    :: Text
+  , searchTitle :: Text
+  } deriving (Eq, Show)
+
+instance ToJSON TodosView where
+  toJSON todosView =
+    object
+      [ "todos" .= todosView.todos
+      , "filter" .= todosView.filterBy
+      , "title" .= todosView.searchTitle
+      ]
+
+instance MimeRender HTML TodosView where
+  mimeRender _ todosView = renderBS $ todoPage todosView.todos todosView.filterBy
+
+data TodoListView = TodoListView
+  { todos             :: [Todo]
+  , filterBy          :: Text
+  , searchTitle       :: Text
+  , highlightedTodoId :: Maybe Int64
+  , outOfBand         :: Bool
+  } deriving (Eq, Show)
+
+instance ToJSON TodoListView where
+  toJSON listView =
+    object
+      [ "todos" .= listView.todos
+      , "filter" .= listView.filterBy
+      , "title" .= listView.searchTitle
+      , "highlightedTodoId" .= listView.highlightedTodoId
+      , "outOfBand" .= listView.outOfBand
+      ]
+
+instance MimeRender HTML TodoListView where
+  mimeRender _ listView =
+    renderBS $
+      todoListSectionHighlightedOob
+        listView.todos
+        listView.searchTitle
+        listView.filterBy
+        listView.highlightedTodoId
+        listView.outOfBand
+
+newtype TodoEditView = TodoEditView Todo
+  deriving (Eq, Show)
+
+instance ToJSON TodoEditView where
+  toJSON (TodoEditView todo) = toJSON todo
+
+instance MimeRender HTML TodoEditView where
+  mimeRender _ (TodoEditView todo) = renderBS $ todoEditForm todo
+
+data TodoMutationView = TodoMutationView
+  { todos             :: [Todo]
+  , filterBy          :: Text
+  , searchTitle       :: Text
+  , mutation          :: TodoMutationStatus
+  , highlightedTodoId :: Maybe Int64
+  } deriving (Eq, Show)
+
+instance ToJSON TodoMutationView where
+  toJSON mutationResult =
+    object
+      [ "todos" .= mutationResult.todos
+      , "filter" .= mutationResult.filterBy
+      , "title" .= mutationResult.searchTitle
+      , "mutation" .= mutationResult.mutation
+      , "highlightedTodoId" .= mutationResult.highlightedTodoId
+      ]
+
+instance MimeRender HTML TodoMutationView where
+  mimeRender _ mutationResult = renderBS case mutationResult.mutation of
+    TodoCreated    -> addResponseHtml
+    TodoDuplicate  -> addResponseHtml
+    TodoEmptyTitle -> addResponseHtml
+    _              -> todoListHtml
+    where
+      addResponseHtml = do
+        todoAddForm
+        todoListSectionHighlightedOob mutationResult.todos "" mutationResult.filterBy mutationResult.highlightedTodoId True
+      todoListHtml =
+        todoListSection mutationResult.todos mutationResult.searchTitle mutationResult.filterBy
+
+data TodoAPI mode = TodoAPI
+  { page
+      :: mode :- "todos"
+      :> QueryParam "filter" Text
+      :> QueryParam "title" Text
+      :> Get '[HTML, JSON] TodosView
+  , list
+      :: mode :- "todos" :> "list"
+      :> QueryParam "filter" Text
+      :> QueryParam "title" Text
+      :> Get '[HTML, JSON] TodoListView
+  , add
+      :: mode :- "todos"
+      :> ReqBody '[FormUrlEncoded, JSON] AddTodoRequest
+      :> Post '[HTML, JSON] TodoMutationView
+  , clear
+      :: mode :- "todos" :> "clear"
+      :> ReqBody '[FormUrlEncoded, JSON] TodoListState
+      :> Post '[HTML, JSON] TodoMutationView
+  , item
+      :: mode :- "todos"
+      :> Capture "id" Int64
+      :> NamedRoutes TodoItemAPI
+  } deriving stock Generic
+
+data TodoItemAPI mode = TodoItemAPI
+  { toggle
+      :: mode :- ReqBody '[FormUrlEncoded, JSON] TodoListState
+      :> Patch '[HTML, JSON] TodoMutationView
+  , delete
+      :: mode :- ReqBody '[FormUrlEncoded, JSON] TodoListState
+      :> Delete '[HTML, JSON] TodoMutationView
+  , edit
+      :: mode :- "edit"
+      :> Get '[HTML, JSON] TodoEditView
+  , update
+      :: mode :- ReqBody '[FormUrlEncoded, JSON] UpdateTodoRequest
+      :> Put '[HTML, JSON] TodoMutationView
+  } deriving stock Generic
+
+type TodoRoutes = NamedRoutes TodoAPI
+
+todoAPI :: Proxy TodoRoutes
+todoAPI = Proxy
+
+todoServer :: Pool -> TodoAPI AsServer
+todoServer pool =
+  TodoAPI
+    { page = getTodosPage pool
+    , list = getTodoListPartial pool
+    , add = addTodo pool
+    , clear = clearCompleted pool
+    , item = todoItemServer pool
+    }
+
+todoItemServer :: Pool -> Int64 -> TodoItemAPI AsServer
+todoItemServer pool todoId =
+  TodoItemAPI
+    { toggle = toggleTodo pool todoId
+    , delete = deleteTodo pool todoId
+    , edit = editTodoForm pool todoId
+    , update = updateTodo pool todoId
+    }
 
 normalizeTitle :: Text -> Text
 normalizeTitle = T.strip
@@ -66,59 +289,14 @@ listStateInclude = "#todo-list-form, " <> searchInputInclude
 addFormStateInclude :: Text
 addFormStateInclude = "#todo-list-form [name='filter'], #todo-input"
 
-render :: Html () -> ResponderM a
-render = Twain.send . Twain.html . renderBS
-
-htmx :: Html () -> Html ()
-htmx body = [hsx|
-  <!DOCTYPE html>
-  <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>My Simple HTML Page</title>
-      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-      <style>
-        @keyframes todo-flash {
-          0% { background-color: color-mix(in srgb, var(--pico-primary), transparent 78%); }
-          100% { background-color: transparent; }
-        }
-        .todo-highlight {
-          animation: todo-flash 1.5s ease-out;
-        }
-      </style>
-      <script defer src="https://cdn.jsdelivr.net/npm/htmx.org@next"></script>
-    </head>
-    <body>
-      <main class="container">
-      {body}
-      </main>
-    </body>
-  </html>
-|]
-
-runDbOr500 :: Pool -> Session a -> ResponderM a
+runDbOr500 :: Pool -> Session a -> Handler a
 runDbOr500 pool session = do
   res <- liftIO $ runDb pool session
   case res of
-    Left err ->
-      send
-        $ Twain.status (toEnum 500)
-        $ Twain.html
-        $ renderBS [hsx|<div>Database Error: {T.pack (show err)}</div>|]
+    Left err -> throwServerError err500
+      { errBody = renderBS [hsx|<div>Database Error: {T.pack (show err)}</div>|]
+      }
     Right a -> pure a
-
-todoRoutes :: Pool -> [Middleware]
-todoRoutes pool =
-  [ Twain.get    "/todos"       (getTodosPage pool)
-  , Twain.get    "/todos/list"  (getTodoListPartial pool)
-  , Twain.post   "/todos"       (addTodo pool)
-  , Twain.post   "/todos/clear" (clearCompleted pool)
-  , Twain.patch  "/todos/:id"   (toggleTodo pool)
-  , Twain.delete "/todos/:id"   (deleteTodo pool)
-  , Twain.get    "/todos/:id/edit" (editTodoForm pool)
-  , Twain.put    "/todos/:id"   (updateTodo pool)
-  ]
 
 getTodosSession :: Session [Todo]
 getTodosSession = do
@@ -127,25 +305,19 @@ getTodosSession = do
       select id :: int8, title :: text, completed :: bool from todos order by id
     |]
 
-getTodosPage :: Pool -> ResponderM a
-getTodosPage pool = do
+getTodosPage :: Pool -> Maybe Text -> Maybe Text -> Handler TodosView
+getTodosPage pool filter_ search_ = do
   items <- runDbOr500 pool getTodosSession
-  -- breakpointIO
-  render $ todoPage items "all"
+  pure $ TodosView items (filterText filter_) (searchText search_)
 
-getTodoListPartial :: Pool -> ResponderM a
-getTodoListPartial pool = do
+getTodoListPartial :: Pool -> Maybe Text -> Maybe Text -> Handler TodoListView
+getTodoListPartial pool filter_ search_ = do
   items   <- runDbOr500 pool getTodosSession
-  filter_ <- Twain.paramMaybe @Text "filter"
-  search_ <- Twain.paramMaybe @Text "title"
-  -- breakpointIO
-  render $ todoListSection items (fromMaybe "" search_) (fromMaybe "all" filter_)
+  pure $ TodoListView items (filterText filter_) (searchText search_) Nothing False
 
-addTodo :: Pool -> ResponderM a
-addTodo pool = do
-  title' <- Twain.param @Text "title"
-  filter_ <- Twain.paramMaybe @Text "filter"
-  let normalizedTitle = normalizeTitle title'
+addTodo :: Pool -> AddTodoRequest -> Handler TodoMutationView
+addTodo pool request = do
+  let normalizedTitle = normalizeTitle request.addTitle
   isDuplicate <- runDbOr500 pool (todoTitleExistsSession normalizedTitle)
   duplicateTodo <-
     if isDuplicate
@@ -154,73 +326,83 @@ addTodo pool = do
   unless (T.null normalizedTitle || isDuplicate) $
     runDbOr500 pool (addTodoSession normalizedTitle)
   items <- runDbOr500 pool getTodosSession
-  let f = fromMaybe "all" filter_
-  -- breakpointIO
-  render do
-    todoAddForm
-    todoListSectionHighlightedOob items "" f (fmap (.id) duplicateTodo) True
+  pure TodoMutationView
+    { todos = items
+    , filterBy = stateFilterText request.addState
+    , searchTitle = ""
+    , mutation = addMutationStatus normalizedTitle isDuplicate
+    , highlightedTodoId = fmap (.id) duplicateTodo
+    }
 
-toggleTodo :: Pool -> ResponderM a
-toggleTodo pool = do
-  i <- Twain.param @Int64 "id"
-  filter_ <- Twain.paramMaybe @Text "filter"
-  search_ <- Twain.paramMaybe @Text "title"
-  runDbOr500 pool (toggleTodoSession i)
+toggleTodo :: Pool -> Int64 -> TodoListState -> Handler TodoMutationView
+toggleTodo pool todoId listState = do
+  runDbOr500 pool (toggleTodoSession todoId)
   items <- runDbOr500 pool getTodosSession
-  -- breakpointIO
-  render $ todoListSection items (fromMaybe "" search_) (fromMaybe "all" filter_)
+  pure $ mutationView TodoToggled listState items Nothing
 
-deleteTodo :: Pool -> ResponderM a
-deleteTodo pool = do
-  i <- Twain.param @Int64 "id"
-  filter_ <- Twain.paramMaybe @Text "filter"
-  search_ <- Twain.paramMaybe @Text "title"
-  runDbOr500 pool (deleteTodoSession i)
+deleteTodo :: Pool -> Int64 -> TodoListState -> Handler TodoMutationView
+deleteTodo pool todoId listState = do
+  runDbOr500 pool (deleteTodoSession todoId)
   items <- runDbOr500 pool getTodosSession
-  -- breakpointIO
-  render $ todoListSection items (fromMaybe "" search_) (fromMaybe "all" filter_)
+  pure $ mutationView TodoDeleted listState items Nothing
 
-clearCompleted :: Pool -> ResponderM a
-clearCompleted pool = do
-  filter_ <- Twain.paramMaybe @Text "filter"
-  search_ <- Twain.paramMaybe @Text "title"
+clearCompleted :: Pool -> TodoListState -> Handler TodoMutationView
+clearCompleted pool listState = do
   runDbOr500 pool clearCompletedSession
   items <- runDbOr500 pool getTodosSession
-  -- breakpointIO
-  render $ todoListSection items (fromMaybe "" search_) (fromMaybe "all" filter_)
+  pure $ mutationView TodoCleared listState items Nothing
 
-editTodoForm :: Pool -> ResponderM a
-editTodoForm pool = do
-  i <- Twain.param @Int64 "id"
-  mTodo <- runDbOr500 pool (getTodoSession i)
-  -- breakpointIO
+editTodoForm :: Pool -> Int64 -> Handler TodoEditView
+editTodoForm pool todoId = do
+  mTodo <- runDbOr500 pool (getTodoSession todoId)
   case mTodo of
-    Just todo -> render [hsx|
-      <li style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0; border-bottom: 1px solid var(--pico-muted-border-color);"
-          id={"todo-item-" <> show todo.id :: Text}>
-        <form hx-put={"/todos/" <> show todo.id :: Text} hx-include={listStateInclude} hx-target="#todo-list" hx-swap={listSwap} style="width: 100%; display: flex; margin-bottom: 0;">
-          <input type="text" name="edit-title" value={todo.title} required autofocus style="flex: 1; margin-bottom: 0;">
-          <button type="submit" class="outline" style="margin-left: 0.5rem; width: auto; padding: 0.25rem 0.5rem; margin-bottom: 0;">Save</button>
-        </form>
-      </li>
-    |]
-    Nothing -> send $ Twain.status (toEnum 404) $ Twain.html "Todo not found"
+    Just todo -> pure $ TodoEditView todo
+    Nothing   -> throwServerError err404 { errBody = "Todo not found" }
 
-updateTodo :: Pool -> ResponderM a
-updateTodo pool = do
-  i <- Twain.param @Int64 "id"
-  editTitle_ <- Twain.paramMaybe @Text "edit-title"
-  titleParam <- Twain.paramMaybe @Text "title"
-  filter_ <- Twain.paramMaybe @Text "filter"
-  let title' = fromMaybe "" (editTitle_ <|> titleParam)
-  let search_ = titleParam
+updateTodo :: Pool -> Int64 -> UpdateTodoRequest -> Handler TodoMutationView
+updateTodo pool todoId request = do
+  let title' = request.updateTitle
   let normalizedTitle = normalizeTitle title'
-  isDuplicate <- runDbOr500 pool (todoTitleExistsExceptSession i normalizedTitle)
+  isDuplicate <- runDbOr500 pool (todoTitleExistsExceptSession todoId normalizedTitle)
   unless (T.null normalizedTitle || isDuplicate) $
-    runDbOr500 pool (updateTodoTitleSession i normalizedTitle)
+    runDbOr500 pool (updateTodoTitleSession todoId normalizedTitle)
   items <- runDbOr500 pool getTodosSession
-  -- breakpointIO
-  render $ todoListSection items (fromMaybe "" search_) (fromMaybe "all" filter_)
+  pure $ mutationView
+    (if isDuplicate then TodoUpdateDuplicate else TodoUpdated)
+    request.updateState
+    items
+    Nothing
+
+filterText :: Maybe Text -> Text
+filterText = fromMaybe "all"
+
+searchText :: Maybe Text -> Text
+searchText = fromMaybe ""
+
+stateFilterText :: TodoListState -> Text
+stateFilterText = filterText . (.stateFilter)
+
+stateSearchText :: TodoListState -> Text
+stateSearchText = searchText . (.stateTitle)
+
+addMutationStatus :: Text -> Bool -> TodoMutationStatus
+addMutationStatus titleExists isDuplicate
+  | T.null titleExists = TodoEmptyTitle
+  | isDuplicate = TodoDuplicate
+  | otherwise = TodoCreated
+
+mutationView :: TodoMutationStatus -> TodoListState -> [Todo] -> Maybe Int64 -> TodoMutationView
+mutationView status listState items highlightedTodoId' =
+  TodoMutationView
+    { todos = items
+    , filterBy = stateFilterText listState
+    , searchTitle = stateSearchText listState
+    , mutation = status
+    , highlightedTodoId = highlightedTodoId'
+    }
+
+throwServerError :: Servant.Server.ServerError -> Handler a
+throwServerError err = MkHandler $ pure $ Left err
 
 addTodoSession :: Text -> Session ()
 addTodoSession title' = statement title'
@@ -284,7 +466,7 @@ updateTodoTitleSession id' title' = statement (title', id')
   [resultlessStatement| update todos set title = $1 :: text where id = $2 :: int8 |]
 
 todoPage :: [Todo] -> Text -> Html ()
-todoPage items filterBy = htmx [hsx|
+todoPage items filterBy = pageShell [hsx|
   <article>
     <h1>Todos</h1>
     {todoAddForm}
@@ -310,6 +492,17 @@ todoAddForm = [hsx|
       <button type="submit">Add</button>
     </fieldset>
   </form>
+|]
+
+todoEditForm :: Todo -> Html ()
+todoEditForm todo = [hsx|
+  <li style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0; border-bottom: 1px solid var(--pico-muted-border-color);"
+      id={"todo-item-" <> show todo.id :: Text}>
+    <form hx-put={"/todos/" <> show todo.id :: Text} hx-include={listStateInclude} hx-target="#todo-list" hx-swap={listSwap} style="width: 100%; display: flex; margin-bottom: 0;">
+      <input type="text" name="edit-title" value={todo.title} required autofocus style="flex: 1; margin-bottom: 0;">
+      <button type="submit" class="outline" style="margin-left: 0.5rem; width: auto; padding: 0.25rem 0.5rem; margin-bottom: 0;">Save</button>
+    </form>
+  </li>
 |]
 
 todoListSection :: [Todo] -> Text -> Text -> Html ()
