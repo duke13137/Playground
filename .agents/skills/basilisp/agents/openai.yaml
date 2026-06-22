@@ -1,0 +1,4 @@
+interface:
+  display_name: "Basilisp"
+  short_description: "Explore Python APIs via Basilisp"
+  default_prompt: "Use $basilisp to inspect this Python package API or debug runtime state through brepl."

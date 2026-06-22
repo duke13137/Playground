@@ -9,12 +9,12 @@ import Rapid
 
 import App
 import Database
-import Logger (cleanupLogger)
+import Logger (closeLogger)
 
 -- $> main
 main :: IO ()
 main = do
   bracket acquirePool releasePool \pool ->
-    bracket_ pass cleanupLogger $
+    bracket_ pass closeLogger $
       rapid 0 \r -> restart r "server" $
         Wai.run 8000 (app pool)

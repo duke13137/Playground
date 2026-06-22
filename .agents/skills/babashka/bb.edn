@@ -1,0 +1,6 @@
+{:paths ["."]
+ :deps {com.fulcrologic/guardrails {:mvn/version "RELEASE"}
+        metosin/malli              {:mvn/version "RELEASE"}}
+
+ :pods {huahaiy/datalevin {:version "0.10.16"}}}
+

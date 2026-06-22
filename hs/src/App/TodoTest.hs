@@ -21,6 +21,9 @@ import Network.Wai
 import Network.Wai.Test qualified as WaiTest
 import Test.Tasty
 import Test.Tasty.HUnit
+import Test.Tasty.Ingredients (composeReporters)
+import Test.Tasty.Ingredients.ConsoleReporter (consoleTestReporter)
+import Test.Tasty.Runners.Html (HtmlPath (HtmlPath), htmlRunner)
 import Test.Tasty.Wai hiding (Session, head)
 import Test.Tasty.Wai qualified as Test
 
@@ -33,7 +36,57 @@ tasty action =
   bracket
     (hGetBuffering stdout)
     (hSetBuffering stdout)
-    (const $ defaultMain action)
+    (const $ defaultMainWithIngredients ingredients tests)
+  where
+    ingredients =
+      htmlRunner `composeReporters` consoleTestReporter : defaultIngredients
+    tests = localOption (Just (HtmlPath "tasty.html")) action
+
+--- $> tasty testDB
+testDB :: TestTree
+testDB = withResource acquirePool releasePool $ \getPool ->
+  testGroup "Todo persistence behavior"
+    [ testCase "Todo CRUD" do
+        pool <- getPool
+        -- clear before test
+        _ <- runDb pool truncateTodosSession
+
+        -- Insert
+        _ <- runDb pool (addTodoSession "Test Task 1")
+        _ <- runDb pool (addTodoSession "Test Task 2")
+
+        -- Verify Insert
+        todos1 <- runDb pool getTodosSession
+        case todos1 of
+          Right ts -> do
+             length ts @?= 2
+             case ts of
+                (firstTodo:_) -> firstTodo.title @?= "Test Task 1"
+                _             -> assertFailure "Expected list with elements"
+          Left err -> assertFailure $ "DB Error: " ++ show err
+
+        -- Complete a task
+        let todos1' = fromRight [] todos1
+        case todos1' of
+            (firstTodo:_) -> do
+                _ <- runDb pool (toggleTodoSession firstTodo.id)
+
+                todos2 <- runDb pool getTodosSession
+                case todos2 of
+                    Right ts2 -> case ts2 of
+                        (t2:_) -> t2.completed @?= True
+                        _      -> assertFailure "Expected list"
+                    Left err -> assertFailure $ "DB Error: " ++ show err
+            _ -> pass
+
+        -- Clear completed
+        _ <- runDb pool clearCompletedSession
+
+        todos3 <- runDb pool getTodosSession
+        case todos3 of
+          Right ts -> length ts @?= 1
+          Left err -> assertFailure $ "DB Error: " ++ show err
+    ]
 
 -- $> tasty testRoute
 testRoute :: TestTree
@@ -303,49 +356,3 @@ truncateTodosSession =
     [resultlessStatement|
       delete from todos
     |]
-
--- $> tasty testDB
-testDB :: TestTree
-testDB = withResource acquirePool releasePool $ \getPool ->
-  testGroup "Todo persistence behavior"
-    [ testCase "Todo CRUD" do
-        pool <- getPool
-        -- clear before test
-        _ <- runDb pool truncateTodosSession
-
-        -- Insert
-        _ <- runDb pool (addTodoSession "Test Task 1")
-        _ <- runDb pool (addTodoSession "Test Task 2")
-
-        -- Verify Insert
-        todos1 <- runDb pool getTodosSession
-        case todos1 of
-          Right ts -> do
-             length ts @?= 2
-             case ts of
-                (firstTodo:_) -> firstTodo.title @?= "Test Task 1"
-                _             -> assertFailure "Expected list with elements"
-          Left err -> assertFailure $ "DB Error: " ++ show err
-
-        -- Complete a task
-        let todos1' = fromRight [] todos1
-        case todos1' of
-            (firstTodo:_) -> do
-                _ <- runDb pool (toggleTodoSession firstTodo.id)
-
-                todos2 <- runDb pool getTodosSession
-                case todos2 of
-                    Right ts2 -> case ts2 of
-                        (t2:_) -> t2.completed @?= True
-                        _      -> assertFailure "Expected list"
-                    Left err -> assertFailure $ "DB Error: " ++ show err
-            _ -> pass
-
-        -- Clear completed
-        _ <- runDb pool clearCompletedSession
-
-        todos3 <- runDb pool getTodosSession
-        case todos3 of
-          Right ts -> length ts @?= 1
-          Left err -> assertFailure $ "DB Error: " ++ show err
-    ]

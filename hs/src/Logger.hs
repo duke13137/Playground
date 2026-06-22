@@ -3,31 +3,42 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Logger
-  ( cleanupLogger
-  , logger
+  ( logDebug
+  , logInfo
+  , logError
+  , closeLogger
   ) where
 
+import Colog.Core.Action (LogAction (..), cmap)
+import Colog.Message qualified as Colog
+import Colog.Monad (LoggerT, usingLoggerT)
+import Control.Monad.IO.Class (MonadIO (liftIO))
+import Data.Text (Text)
+import GHC.Stack (HasCallStack, withFrozenCallStack)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Log.FastLogger (FastLogger, LogStr, LogType' (LogStdout), defaultBufSize, newFastLogger, toLogStr)
-
-import Colog (LogAction (..), LoggerT, Message, cmap, fmtMessage, usingLoggerT)
 
 fastLogger :: (FastLogger, IO ())
 fastLogger = unsafePerformIO $ newFastLogger (LogStdout defaultBufSize)
 {-# NOINLINE fastLogger #-}
 
-logStdout :: FastLogger
-logStdout = fst fastLogger
+loggerAction :: MonadIO m => FastLogger -> LogAction m LogStr
+loggerAction logger' = LogAction $ \logStr -> liftIO $ logger' logStr
 
-cleanupLogger :: IO ()
-cleanupLogger = snd fastLogger
+fmtLogStr :: Colog.Message -> LogStr
+fmtLogStr = toLogStr . (<> "\n") . Colog.fmtMessage
 
--- | Bridges a fast-logger function into a co-log LogAction
-fastLoggerAction :: MonadIO m => FastLogger -> LogAction m LogStr
-fastLoggerAction logger' = LogAction $ \logStr -> liftIO $ logger' logStr
+runLogger :: MonadIO m => LoggerT Colog.Message m a -> m a
+runLogger = usingLoggerT $ cmap fmtLogStr (loggerAction (fst fastLogger))
 
-fmtLogStr :: Message -> LogStr
-fmtLogStr = toLogStr . (<> "\n") . fmtMessage
+closeLogger :: IO ()
+closeLogger = snd fastLogger
 
-logger :: MonadIO m => LoggerT Message m a -> m a
-logger = usingLoggerT $ cmap fmtLogStr (fastLoggerAction logStdout)
+logDebug :: (HasCallStack, MonadIO m) => Text -> m ()
+logDebug msg = withFrozenCallStack $ runLogger $ Colog.logDebug msg
+
+logInfo :: (HasCallStack, MonadIO m) => Text -> m ()
+logInfo msg =  withFrozenCallStack $ runLogger $ Colog.logInfo msg
+
+logError :: (HasCallStack, MonadIO m) => Text -> m ()
+logError msg = withFrozenCallStack $ runLogger $ Colog.logError msg

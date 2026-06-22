@@ -6,7 +6,7 @@ GHC  ?= 9.12
 MAIN ?= Main
 EXE  := $(shell basename $(MAIN) .Main)
 
-.PHONY: dev exe env hie pg
+.PHONY: dev exe env pg
 
 dev:
 	ghciwatch --clear --no-interrupt-reloads \
@@ -15,7 +15,6 @@ dev:
 		--restart-glob Makefile \
 		--restart-glob .ghc.environment.* \
 		--enable-eval --watch .
-
 
 exe:
 	mkdir -p .build && ln -sf .build .hiefiles && ln -sf .build .hifiles
@@ -29,11 +28,8 @@ env:
 		aeson aeson-optics generic-data optics witch safe-wild-cards strict-wrapper \
 		hasql hasql-th hasql-dynamic-statements hasql-pool hasql-postgresql-types postgresql-types \
 		http-api-data http-types ihp-hsx ihp-router lucid2 servant servant-server wai wai-extra warp \
-		bluefin co-log fast-logger ki mtl io-classes io-sim grace \
-		breakpoint nothunks rapid tasty tasty-hunit tasty-wai
-
-hie:
-	hiedb-$(GHC) -D .hiedb index .build
+		bluefin co-log co-log-core fast-logger ki mtl io-classes io-sim grace \
+		breakpoint nothunks rapid tasty tasty-hunit tasty-html tasty-silver tasty-wai
 
 pg:
 	docker run --name postgres \

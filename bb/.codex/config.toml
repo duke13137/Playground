@@ -1,5 +1,15 @@
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = false
+
+[mcp_servers.clojure-mcp]
+command = "clojure"
+args = ["-Tmcp", "start", ":config-profile", ":cli-assist"]
+enabled = true
+
 [mcp_servers.repl-mcp]
 args = ["--mode", "dev", "--port-file", ".nrepl-port"]
 command = "repl-agent"
 default_tools_approval_mode = "approve"
-enabled = true
+enabled = false

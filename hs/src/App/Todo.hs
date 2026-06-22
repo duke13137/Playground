@@ -41,15 +41,14 @@ import Data.Text qualified as T
 import Data.Vector qualified as V
 import Prelude hiding (id)
 
-import Colog (logInfo)
 import Control.Exception qualified as Exception (SomeException, try)
 import Database
-import Grace.Input qualified as Grace.Input (Input (Code))
+import Grace.Input qualified (Input (Code))
 import Grace.Interpret qualified as Grace (loadWith, (<~))
 import Hasql.TH
 import Htmx
 import Http (RouteHandler, runDbOr500, throwRouteError)
-import Logger (logger)
+import Logger
 import Network.HTTP.Types (status404)
 import Web.FormUrlEncoded
 
@@ -190,10 +189,6 @@ renderTodoMutationViewHtml mutationResult = renderBS case mutationResult.mutatio
         mutationResult.editingTitle
 
 
-infoLog :: HasCallStack => Text -> RouteHandler ()
-infoLog msg =
-  withFrozenCallStack $ logger $ logInfo msg
-
 normalizeTitle :: Text -> Text
 normalizeTitle = T.strip
 
@@ -221,22 +216,22 @@ getTodosSession = do
 
 getTodosPage :: HasCallStack => Pool -> Maybe Text -> Maybe Text -> RouteHandler TodosView
 getTodosPage pool filter_ search_ = do
-  infoLog $ "GET /todos page filter=" <> filterText filter_ <> " search=" <> searchText search_
+  logInfo $ "GET /todos page filter=" <> filterText filter_ <> " search=" <> searchText search_
   items <- runDbOr500 pool getTodosSession
-  infoLog $ "DB todos page todos=" <> T.show items
+  logInfo $ "DB todos page todos=" <> T.show items
   pure $ TodosView items (filterText filter_) (searchText search_)
 
 getTodoListPartial :: HasCallStack => Pool -> Maybe Text -> Maybe Text -> RouteHandler TodoListView
 getTodoListPartial pool filter_ search_ = do
-  infoLog $ "GET /todos/list filter=" <> filterText filter_ <> " search=" <> searchText search_
+  logInfo $ "GET /todos/list filter=" <> filterText filter_ <> " search=" <> searchText search_
   items   <- runDbOr500 pool getTodosSession
-  infoLog $ "DB todos list todos=" <> T.show items
+  logInfo $ "DB todos list todos=" <> T.show items
   pure $ TodoListView items (filterText filter_) (searchText search_) Nothing False
 
 addTodo :: HasCallStack => Pool -> AddTodoRequest -> RouteHandler TodoMutationView
 addTodo pool request = do
   let normalizedTitle = normalizeTitle request.addTitle
-  infoLog $ "POST /todos add title=" <> normalizedTitle
+  logInfo $ "POST /todos add title=" <> normalizedTitle
   isDuplicate <- runDbOr500 pool (todoTitleExistsSession normalizedTitle)
   duplicateTodo <-
     if isDuplicate
@@ -246,7 +241,7 @@ addTodo pool request = do
   unless (T.null normalizedTitle || isDuplicate) $
     runDbOr500 pool (addTodoSession normalizedTitle)
   items <- runDbOr500 pool getTodosSession
-  infoLog $ "DB add added=" <> T.show addedAny <> " duplicateTodo=" <> T.show duplicateTodo <> " todos=" <> T.show items
+  logInfo $ "DB add added=" <> T.show addedAny <> " duplicateTodo=" <> T.show duplicateTodo <> " todos=" <> T.show items
   pure TodoMutationView
     { todos = items
     , filterBy = stateFilterText request.addState
@@ -278,7 +273,7 @@ generateTodos pool generate request = do
       result <- generate normalizedPrompt
       case result of
         Left _ -> do
-          infoLog "Grace todo generation failed"
+          logInfo "Grace todo generation failed"
           pure $ mkView existingItems TodoGenerationFailed
         Right generatedTitles -> do
           let insertable = insertableGeneratedTitles existingItems generatedTitles
@@ -333,39 +328,39 @@ graceGenerateTodoTitles promptText = do
     Grace.loadWith ["todoPrompt" Grace.<~ promptText] (Grace.Input.Code "todo-generation" graceSource)
   case result of
     Left exc -> do
-      infoLog $ "Grace generation failed: " <> T.show exc
+      logInfo $ "Grace generation failed: " <> T.show exc
       pure $ Left "grace generation failed"
     Right titles -> pure $ Right titles
 
 toggleTodo :: HasCallStack => Pool -> Int64 -> TodoListState -> RouteHandler TodoMutationView
 toggleTodo pool todoId listState = do
-  infoLog $ "PATCH /todos/" <> show todoId <> " toggle"
+  logInfo $ "PATCH /todos/" <> show todoId <> " toggle"
   runDbOr500 pool (toggleTodoSession todoId)
   items <- runDbOr500 pool getTodosSession
-  infoLog $ "DB toggle todos=" <> T.show items
+  logInfo $ "DB toggle todos=" <> T.show items
   pure $ mutationView TodoToggled listState items Nothing
 
 deleteTodo :: HasCallStack => Pool -> Int64 -> Maybe Text -> RouteHandler TodoMutationView
 deleteTodo pool todoId mFilter = do
-  infoLog $ "DELETE /todos/" <> show todoId
+  logInfo $ "DELETE /todos/" <> show todoId
   runDbOr500 pool (deleteTodoSession todoId)
   items <- runDbOr500 pool getTodosSession
-  infoLog $ "DB delete todos=" <> T.show items
+  logInfo $ "DB delete todos=" <> T.show items
   pure $ mutationView TodoDeleted (TodoListState mFilter Nothing) items Nothing
 
 clearCompleted :: HasCallStack => Pool -> TodoListState -> RouteHandler TodoMutationView
 clearCompleted pool listState = do
-  infoLog "POST /todos/clear"
+  logInfo "POST /todos/clear"
   runDbOr500 pool clearCompletedSession
   items <- runDbOr500 pool getTodosSession
-  infoLog $ "DB clear todos=" <> T.show items
+  logInfo $ "DB clear todos=" <> T.show items
   pure $ mutationView TodoCleared listState items Nothing
 
 editTodoForm :: HasCallStack => Pool -> Int64 -> RouteHandler TodoEditView
 editTodoForm pool todoId = do
-  infoLog $ "GET /todos/" <> show todoId <> "/edit"
+  logInfo $ "GET /todos/" <> show todoId <> "/edit"
   mTodo <- runDbOr500 pool (getTodoSession todoId)
-  infoLog $ "DB edit todo=" <> T.show mTodo
+  logInfo $ "DB edit todo=" <> T.show mTodo
   case mTodo of
     Just todo -> pure $ TodoEditView todo
     Nothing   -> throwRouteError status404 "Todo not found"
@@ -374,7 +369,7 @@ updateTodo :: HasCallStack => Pool -> Int64 -> UpdateTodoRequest -> RouteHandler
 updateTodo pool todoId request = do
   let title' = request.updateTitle
   let normalizedTitle = normalizeTitle title'
-  infoLog $ "PUT /todos/" <> show todoId <> " title=" <> normalizedTitle
+  logInfo $ "PUT /todos/" <> show todoId <> " title=" <> normalizedTitle
   isDuplicate <- runDbOr500 pool (todoTitleExistsExceptSession todoId normalizedTitle)
   duplicateTodo <-
     if isDuplicate
@@ -384,7 +379,7 @@ updateTodo pool todoId request = do
   unless (T.null normalizedTitle || isDuplicate) $
     runDbOr500 pool (updateTodoTitleSession todoId normalizedTitle)
   items <- runDbOr500 pool getTodosSession
-  infoLog $ "DB update updated=" <> T.show updated <> " todos=" <> T.show items
+  logInfo $ "DB update updated=" <> T.show updated <> " todos=" <> T.show items
   if updated
     then pure $ mutationView TodoUpdated request.updateState items Nothing
     else pure (mutationView TodoUpdateDuplicate request.updateState items (fmap (.id) duplicateTodo))
