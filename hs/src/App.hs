@@ -10,6 +10,7 @@ module App
   , appWithTodoGenerator
   ) where
 
+import App.Todo
 import Data.ByteString.Lazy qualified as LBS
 import Database
 import Htmx
@@ -19,7 +20,6 @@ import Network.HTTP.Types (StdMethod (..), status200, status404)
 import Network.Wai (Application, Request, Response, ResponseReceived)
 import Prelude hiding (id)
 import Web.FormUrlEncoded (FromForm)
-import App.Todo
 
 data AppRoute
   = HomeAction
@@ -58,9 +58,9 @@ dispatch :: GenerateTodoTitles -> Pool -> AppRoute -> Application
 dispatch _generate _pool HomeAction _req respond =
   respond $ htmlResponse status200 $ renderBS index
 dispatch _generate pool (TodosPageAction f t) req respond =
-  runViewApplication renderTodosViewHtml (getTodosPage pool f t) req respond
+  runView renderTodosViewHtml (getTodosPage pool f t) req respond
 dispatch _generate pool (TodoListAction f t) req respond =
-  runViewApplication renderTodoListViewHtml (getTodoListPartial pool f t) req respond
+  runView renderTodoListViewHtml (getTodoListPartial pool f t) req respond
 dispatch _generate pool AddTodoAction req respond =
   withParsedBody req (addTodo pool) renderTodoMutationViewHtml respond
 dispatch _generate pool ClearTodosAction req respond =
@@ -72,11 +72,11 @@ dispatch _generate pool (ToggleTodoAction rawId) req respond =
 dispatch _generate pool (DeleteTodoAction rawId f) _req respond =
   case routeTodoIdOr404 rawId of
     Left response -> respond response
-    Right todoId  -> runViewApplication renderTodoMutationViewHtml (deleteTodo pool todoId f) _req respond
+    Right todoId  -> runView renderTodoMutationViewHtml (deleteTodo pool todoId f) _req respond
 dispatch _generate pool (EditTodoAction rawId) _req respond =
   case routeTodoIdOr404 rawId of
     Left response -> respond response
-    Right todoId  -> runViewApplication renderTodoEditViewHtml (editTodoForm pool todoId) _req respond
+    Right todoId  -> runView renderTodoEditViewHtml (editTodoForm pool todoId) _req respond
 dispatch _generate pool (UpdateTodoAction rawId) req respond =
   case routeTodoIdOr404 rawId of
     Left response -> respond response
@@ -90,8 +90,8 @@ routeTodoIdOr404 rawId =
     Nothing     -> Left $ htmlResponse status404 $ renderBS page404
     Just todoId -> Right todoId
 
-runViewApplication :: (a -> LBS.ByteString) -> RouteHandler a -> Application
-runViewApplication renderHtml action req respond = do
+runView :: (a -> LBS.ByteString) -> RouteHandler a -> Application
+runView renderHtml action req respond = do
   result <- runRouteHandler action
   respond case result of
     Left err    -> errorResponse err
@@ -102,7 +102,7 @@ withParsedBody req action renderHtml respond = do
   parsed <- runRouteHandler (parseRequestBody req)
   case parsed of
     Left err    -> respond (errorResponse err)
-    Right value -> runViewApplication renderHtml (action value) req respond
+    Right value -> runView renderHtml (action value) req respond
 
 index :: Html ()
 index = [hsx|<h1>Welcome!</h1>|]
