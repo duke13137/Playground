@@ -6,7 +6,7 @@
   (:import
    [java.lang Exception]))
 
-#?(:bb  (do (babashka.pods/load-pod 'huahaiy/datalevin "0.10.7")
+#?(:bb  (do (babashka.pods/load-pod 'huahaiy/datalevin "1.0.0")
             (require '[pod.huahaiy.datalevin :as d]))
    :clj (require '[datalevin.core :as d]))
 

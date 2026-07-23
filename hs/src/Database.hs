@@ -17,11 +17,13 @@ import Hasql.Pool qualified as Pool
 import Hasql.Pool.Config qualified as Pool
 import Hasql.Session
 import Hasql.Statement
+import Pqi.Native qualified as Pqi
 
 acquirePool :: IO Pool.Pool
 acquirePool = do
   setting <- getConnectionSetting
   Pool.acquire
+    Pqi.adapter
     ( Pool.settings
         [ Pool.size 8
         , Pool.acquisitionTimeout 10

@@ -1,4 +1,4 @@
-(babashka.pods/load-pod 'huahaiy/datalevin "0.10.7")
+(babashka.pods/load-pod 'huahaiy/datalevin "1.0.0")
 
 (ns iam-datalevin
   "Datalevin schema for AWS IAM relationship and blast-radius analysis.
