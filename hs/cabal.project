@@ -3,3 +3,5 @@ packages:
   ../../ihp/ihp-hsx/
   ../../ihp/ihp-router/
   ../../grace/
+package *
+  ghc-options: -finfo-table-map -fdistinct-constructor-tables

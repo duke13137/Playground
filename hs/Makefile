@@ -18,7 +18,7 @@ dev:
 
 exe:
 	mkdir -p .build && ln -sf .build .hiefiles && ln -sf .build .hifiles
-	ghc-$(GHC) -threaded -isrc -outputdir .build -main-is $(MAIN) -o .build/$(EXE) $(MAIN)
+	ghc-$(GHC) -threaded -rtsopts -isrc -outputdir .build -main-is $(MAIN) -o .build/$(EXE) $(MAIN)
 
 env:
 	rm .ghc.environment.*$(GHC)* || true
@@ -28,8 +28,9 @@ env:
 		aeson aeson-optics generic-data optics witch safe-wild-cards strict-wrapper \
 		hasql hasql-th hasql-dynamic-statements hasql-pool hasql-postgresql-types pqi-native postgresql-types \
 		http-api-data http-types ihp-hsx ihp-router lucid2 servant servant-server wai wai-extra warp \
-		bluefin co-log co-log-core fast-logger ki mtl io-classes io-sim grace \
-		breakpoint nothunks rapid tasty tasty-hunit tasty-html tasty-silver tasty-wai
+		bluefin ki co-log co-log-core fast-logger mtl io-classes io-sim \
+		breakpoint ghc-stack-profiler nothunks rapid grace \
+		tasty tasty-hunit tasty-html tasty-silver tasty-wai
 
 pg:
 	docker run --name postgres \
